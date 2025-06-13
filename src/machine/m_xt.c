@@ -1239,6 +1239,28 @@ machine_xt_v20xt_init(const machine_t *model)
 }
 
 int
+machine_xt_tuliptc8_init(const machine_t *model)
+{
+    int ret;
+
+    /* ret = bios_load_linear("roms/machines/tuliptc8/tulip_tc8.bin",
+                           0x000fc000, 16384, 0); */
+    ret = bios_load_interleaved("roms/machines/tuliptc8/tulip_tc8_part1.bin",
+                                "roms/machines/tuliptc8/tulip_tc8_part2.bin",
+                                0x000fc000, 16384, 0);
+
+    if (bios_only || !ret)
+        return ret;
+
+//    machine_xt_clone_init(model, 0);
+
+    device_add(&keyboard_xt_device);
+    machine_xt_common_init(model, 0);    
+
+    return ret;
+}
+
+int
 machine_xt_pb8810_init(const machine_t *model)
 {
     int ret;

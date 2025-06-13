@@ -975,6 +975,7 @@ extern int machine_xt_bw230_init(const machine_t *);
 extern int machine_xt_pb8810_init(const machine_t *);
 
 extern int machine_xt_v20xt_init(const machine_t *);
+extern int machine_xt_tuliptc8_init(const machine_t *);
 
 extern int machine_xt_iskra3104_init(const machine_t *);
 extern int machine_xt_pravetz16_imko4_init(const machine_t *);
