@@ -169,13 +169,14 @@
         <file alias="hp_vectra_486n.png">qt/assets/systemicons/hp_vectra_486n.png</file>
         <file alias="tulip_compact_2.png">qt/assets/systemicons/tulip_compact_2.png</file>
 		<file alias="compaq_1993.png">qt/assets/systemicons/compaq_1993.png</file>
-		<file alias="hp_1999.png"   >qt/assets/systemicons/hp_1999.png</file>
-		<file alias="ibm.png"       >qt/assets/systemicons/ibm.png</file>
+		<file alias="hp_1999.png">qt/assets/systemicons/hp_1999.png</file>
+		<file alias="ibm.png">qt/assets/systemicons/ibm.png</file>
 		<file alias="olivetti_pc.png">qt/assets/systemicons/olivetti_pc.png</file>
 		<file alias="packard_bell_1994.png">qt/assets/systemicons/packard_bell_1994.png</file>
 		<file alias="tandy_computer_products.png">qt/assets/systemicons/tandy_computer_products.png</file>
 		<file alias="tandy_corporation.png">qt/assets/systemicons/tandy_corporation.png</file>
 		<file alias="tandy_logo.png">qt/assets/systemicons/tandy_logo.png</file>
-		<file alias="tulip_computers.png">qt/assets/systemicons/tulip_computers.png</file>        
+		<file alias="tulip_computers.png">qt/assets/systemicons/tulip_computers.png</file>
+        <file alias="dell_logo.png">qt/assets/systemicons/dell_logo.png</file>
     </qresource>
 </RCC>
