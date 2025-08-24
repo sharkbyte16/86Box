@@ -180,5 +180,7 @@
 		<file alias="tandy_logo.png">qt/assets/systemicons/tandy_logo.png</file>
 		<file alias="tulip_computers.png">qt/assets/systemicons/tulip_computers.png</file>
         <file alias="dell_logo.png">qt/assets/systemicons/dell_logo.png</file>
+        <file alias="siemens_nixdorf_logo.png">qt/assets/systemicons/siemens_nixdorf_logo.png</file>
+        <file alias="acer_logo_1987.png">qt/assets/systemicons/acer_logo_1987.png</file>
     </qresource>
 </RCC>
