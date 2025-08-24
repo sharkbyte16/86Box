@@ -147,7 +147,7 @@ VMManagerMain::VMManagerMain(QWidget *parent) :
                 connect(buttonBox, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
                 connect(buttonBox, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
                 layout->addWidget(buttonBox);
-                connect(edit, &QLineEdit::textChanged, this, [this, errLabel, buttonBox] (const QString& text) {
+                connect(edit, &QLineEdit::textChanged, this, [errLabel, buttonBox] (const QString& text) {
                     bool isSpaceOnly = true;
 #ifdef Q_OS_WINDOWS
                     const char illegalChars[] = "<>:\"|?*\\/";
@@ -218,7 +218,7 @@ illegal_chars:
                     QString srcPath = selected_sysconfig->config_dir;
                     QString dstPath = vmDir;
 
-                    std::thread copyThread([this, &finished, srcPath, dstPath, &errCode] {
+                    std::thread copyThread([&finished, srcPath, dstPath, &errCode] {
                         errCode = copyPath(srcPath, dstPath, true);
                         finished = true;
                     });
@@ -285,7 +285,7 @@ illegal_chars:
 
             QAction deleteAction(tr("&Delete"));
             contextMenu.addAction(&deleteAction);
-            connect(&deleteAction, &QAction::triggered, [this, parent] {
+            connect(&deleteAction, &QAction::triggered, [this] {
                 deleteSystem(selected_sysconfig);
             });
             deleteAction.setEnabled(selected_sysconfig->process->state() == QProcess::NotRunning);
@@ -349,7 +349,7 @@ illegal_chars:
     });
 
     // Initial default details view
-    vm_details = new VMManagerDetails();
+    vm_details = new VMManagerDetails(ui->detailsArea);
     ui->detailsArea->layout()->addWidget(vm_details);
     const QItemSelectionModel *selection_model = ui->listView->selectionModel();
 
@@ -784,6 +784,14 @@ VMManagerMain::onLanguageUpdated()
     if (vm_model->rowCount(QModelIndex()) > 0)
         vm_details->updateData(selected_sysconfig);
 }
+
+#ifdef Q_OS_WINDOWS
+void
+VMManagerMain::onDarkModeUpdated()
+{
+    vm_details->updateStyle();
+}
+#endif
 
 int
 VMManagerMain::getActiveMachineCount()
