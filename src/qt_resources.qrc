@@ -209,5 +209,8 @@
         <file alias="generic_tower_pc.png">qt/assets/systemicons/generic_tower_pc.png</file>
         <file alias="hp_vectra_486n.png">qt/assets/systemicons/hp_vectra_486n.png</file>
         <file alias="tulip_compact_2.png">qt/assets/systemicons/tulip_compact_2.png</file>
+		<file alias="escom_logo.png">qt/assets/systemicons/escom_logo.png</file>
+		<file alias="vobis_logo.png">qt/assets/systemicons/vobis_logo.png</file>        
+        <file alias="memo_logo.png">qt/assets/systemicons/memo_logo.png</file>        
     </qresource>
 </RCC>
