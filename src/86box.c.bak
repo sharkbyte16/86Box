@@ -1959,9 +1959,9 @@ set_screen_size_monitor(int x, int y, int monitor_index)
         monitors[monitor_index].mon_unscaled_size_y = monitors[monitor_index].mon_efscrnsz_y;
 
     switch (scale) {
-        case 0: /* 125% */
-            monitors[monitor_index].mon_scrnsz_x = ((monitors[monitor_index].mon_unscaled_size_x * 5) >> 2);
-            monitors[monitor_index].mon_scrnsz_y = ((monitors[monitor_index].mon_unscaled_size_y * 5) >> 2);
+        case 0: /* 50% */
+            monitors[monitor_index].mon_scrnsz_x = (monitors[monitor_index].mon_unscaled_size_x >> 1);
+            monitors[monitor_index].mon_scrnsz_y = (monitors[monitor_index].mon_unscaled_size_y >> 1);
             break;
 
         case 1: /* 100% */

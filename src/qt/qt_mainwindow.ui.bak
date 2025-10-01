@@ -499,7 +499,7 @@
     <bool>true</bool>
    </property>
    <property name="text">
-    <string>&amp;1.25x</string>
+    <string>&amp;0.5x</string>
    </property>
   </action>
   <action name="action1x">
