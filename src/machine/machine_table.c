@@ -3105,7 +3105,7 @@ const machine_t machines[] = {
         .flags     = MACHINE_XTA | MACHINE_VIDEO_FIXED,
         .ram       = {
             .min  = 512,
-            .max  = 16384,
+            .max  = 4096,
             .step = 512
         },
         .nvrmask                  = 127,
@@ -4959,7 +4959,7 @@ const machine_t machines[] = {
         .flags     = MACHINE_VIDEO,
         .ram       = {
             .min  = 1024,
-            .max  = 10240,
+            .max  = 12288,
             .step = 1024
         },
         .nvrmask                  = 63,
@@ -6627,7 +6627,7 @@ const machine_t machines[] = {
     },
     /* Has AMIKey 'F' KBC firmware. */
     {
-        .name              = "[OPTi 391] DataExpert 386WB",
+        .name              = "[OPTi 391] DataExpert 386C",
         .internal_name     = "dataexpert386wb",
         .type              = MACHINE_TYPE_386DX,
         .chipset           = MACHINE_CHIPSET_OPTI_391,
@@ -6661,7 +6661,7 @@ const machine_t machines[] = {
         .kbc_p1                   = 0x000004f0,
         .gpio                     = 0xffffffff,
         .gpio_acpi                = 0xffffffff,
-        .device                   = NULL,
+        .device                   = &dataexpert386wb_device,
         .kbd_device               = NULL,
         .fdc_device               = NULL,
         .sio_device               = NULL,
@@ -10547,10 +10547,10 @@ const machine_t machines[] = {
         .snd_device               = NULL,
         .net_device               = NULL
     },
-    /* Compaq Presario 7100 / 7200 Series, using MiTAC/Trigon PL4600C (486). */
+    /* Compaq Presario 7100 Series, using MiTAC/Trigon PL4600C (486). */
     /* Has a VIA VT82C42N KBC. */
     {
-        .name              = "[UMC 8881] Compaq Presario 7100/7200 Series 486",
+        .name              = "[UMC 8881] Compaq Presario 7100 Series 486",
         .internal_name     = "pl4600c",
         .type              = MACHINE_TYPE_486_S3_PCI,
         .chipset           = MACHINE_CHIPSET_UMC_UM8881,
@@ -11350,7 +11350,7 @@ const machine_t machines[] = {
         .kbc_p1                   = 0x00000cf0,
         .gpio                     = 0xffffffff,
         .gpio_acpi                = 0xffffffff,
-        .device                   = NULL,
+        .device                   = &p5mp3_device,
         .kbd_device               = NULL,
         .fdc_device               = NULL,
         .sio_device               = NULL,
@@ -11448,7 +11448,7 @@ const machine_t machines[] = {
     },
     /* Has IBM PS/2 Type 1 KBC firmware. */
     {
-        .name              = "[i430LX] IBM PS/ValuePoint P60",
+        .name              = "[i430LX] IBM PS/ValuePoint P60 (Robin ACE)",
         .internal_name     = "valuepointp60",
         .type              = MACHINE_TYPE_SOCKET4,
         .chipset           = MACHINE_CHIPSET_INTEL_430LX,
@@ -11578,7 +11578,7 @@ const machine_t machines[] = {
         .snd_device               = NULL,
         .net_device               = NULL
     },
-    /* The M5Pi appears to have a Phoenix MultiKey KBC firmware according to photos. */	
+    /* The M5Pi appears to have a Phoenix MultiKey KBC firmware according to photos. */
     {
         .name              = "[i430LX] Micronics M5Pi",
         .internal_name     = "m5pi",
@@ -12423,13 +12423,56 @@ const machine_t machines[] = {
         .kbc_p1                   = 0x00000cf0,
         .gpio                     = 0xffffffff,
         .gpio_acpi                = 0xffffffff,
-        .device                   = NULL,
+        .device                   = &pt2000_device,
         .kbd_device               = NULL,
         .fdc_device               = NULL,
         .sio_device               = NULL,
         .vid_device               = NULL,
         .snd_device               = NULL,
         .net_device               = NULL
+    },
+    {
+        .name = "[i430FX] IBM PC 3x0 (type 65x6) (Morrison64)",
+        .internal_name = "pc330_65x6",
+        .type = MACHINE_TYPE_SOCKET5,
+        .chipset = MACHINE_CHIPSET_INTEL_430FX,
+        .init = machine_at_pc330_65x6_init,
+        .p1_handler = machine_generic_p1_handler,
+        .gpio_handler = NULL,
+        .available_flag = MACHINE_AVAILABLE,
+        .gpio_acpi_handler = NULL,
+        .cpu = {
+            .package = CPU_PKG_SOCKET5_7,
+            .block = CPU_BLOCK(CPU_K5, CPU_5K86, CPU_Cx6x86),
+            .min_bus = 50000000,
+            .max_bus = 66666667,
+            .min_voltage = 3380,
+            .max_voltage = 3520,
+            .min_multi = 1.5,
+            .max_multi = 2.0
+        },
+        .bus_flags = MACHINE_PS2_PCI,
+        .flags = MACHINE_IDE_DUAL | MACHINE_VIDEO | MACHINE_APM,
+        .ram = {
+            .min = 8192,
+            .max = 131072,
+            .step = 8192
+        },
+        .nvrmask = 255,
+		.jumpered_ecp_dma = MACHINE_DMA_DISABLED | MACHINE_DMA_1 | MACHINE_DMA_3,
+        .default_jumpered_ecp_dma = 3,
+        .kbc_device = NULL,
+        .kbc_params = 0x00000000,
+        .kbc_p1 = 0x000044f0,
+        .gpio = 0xffffffff,
+        .gpio_acpi = 0xffffffff,
+        .device = NULL,
+		.kbd_device = NULL,
+        .fdc_device = NULL,
+        .sio_device = NULL,
+        .vid_device = &s3_phoenix_trio64_onboard_pci_device,
+        .snd_device = NULL,
+        .net_device = NULL
     },
     /* According to tests from real hardware: This has AMI MegaKey KBC firmware on the
        PC87306 Super I/O chip, command 0xA1 returns '5'.
@@ -12469,7 +12512,7 @@ const machine_t machines[] = {
         .kbc_p1                   = 0x000044f0,
         .gpio                     = 0xffffffff,
         .gpio_acpi                = 0xffffffff,
-        .device                   = NULL,
+        .device                   = &zappa_device,
         .kbd_device               = NULL,
         .fdc_device               = NULL,
         .sio_device               = NULL,
@@ -12477,9 +12520,12 @@ const machine_t machines[] = {
         .snd_device               = NULL,
         .net_device               = NULL
     },
-    /* The BIOS sends KBC command B3 which indicates an AMI (or VIA VT82C42N) KBC. */
+    /*
+       The BIOS sends KBC command B3 which indicates an AMI (or VIA VT82C42N) KBC.
+       The board turns out to be a BCM FM540 which has an AMI 'H' KBC.
+     */
     {
-        .name              = "[i430FX] NEC PowerMate Vxxx",
+        .name              = "[i430FX] NEC PowerMate Vxxx (BCM FM540)",
         .internal_name     = "powermatev",
         .type              = MACHINE_TYPE_SOCKET5,
         .chipset           = MACHINE_CHIPSET_INTEL_430FX,
@@ -12509,11 +12555,11 @@ const machine_t machines[] = {
         .jumpered_ecp_dma         = MACHINE_DMA_USE_MBDMA,
         .default_jumpered_ecp_dma = -1,
         .kbc_device               = &kbc_at_device,
-        .kbc_params               = KBC_VEN_VIA | 0x00424600,
+        .kbc_params               = KBC_VEN_AMI | 0x00004800,
         .kbc_p1                   = 0x00000cf0,
         .gpio                     = 0xffffffff,
         .gpio_acpi                = 0xffffffff,
-        .device                   = NULL,
+        .device                   = &powermatev_device,
         .kbd_device               = NULL,
         .fdc_device               = NULL,
         .sio_device               = NULL,
@@ -12999,7 +13045,7 @@ const machine_t machines[] = {
             .min  = 4096,
             .max  = 131072,
             .step = 4096
-        }, 
+        },
         .nvrmask = 127,
         .jumpered_ecp_dma = MACHINE_DMA_USE_CONFIG,
         .default_jumpered_ecp_dma = -1,
@@ -13018,7 +13064,7 @@ const machine_t machines[] = {
     },
     /* Has a VIA KBC chip */
     {
-        .name              = "[VLSI SuperCore] DFI G586VPM Rev C",
+        .name              = "[VLSI SuperCore] DFI G586VPM (rev. C)",
         .internal_name     = "g586vpmc",
         .type              = MACHINE_TYPE_SOCKET5,
         .chipset           = MACHINE_CHIPSET_VLSI_SUPERCORE,
@@ -13336,6 +13382,52 @@ const machine_t machines[] = {
        PC87306 Super I/O chip, command 0xA1 returns '5'.
        Command 0xA0 copyright string: (C)1994 AMI . */
     {
+        .name              = "[i430FX] Intel Advanced/AS (Atlantis)",
+        .internal_name     = "atlantis",
+        .type              = MACHINE_TYPE_SOCKET7_3V,
+        .chipset           = MACHINE_CHIPSET_INTEL_430FX,
+        .init              = machine_at_atlantis_init,
+        .p1_handler        = machine_generic_p1_handler,
+        .gpio_handler      = NULL,
+        .available_flag    = MACHINE_AVAILABLE,
+        .gpio_acpi_handler = NULL,
+        .cpu               = {
+            .package     = CPU_PKG_SOCKET5_7,
+            .block       = CPU_BLOCK(CPU_K5, CPU_5K86, CPU_Cx6x86),
+            .min_bus     = 50000000,
+            .max_bus     = 66666667,
+            .min_voltage = 3380,
+            .max_voltage = 3520,
+            .min_multi   = 1.5,
+            .max_multi   = 3.0
+        },
+        .bus_flags = MACHINE_PS2_PCI,
+        .flags     = MACHINE_IDE_DUAL | MACHINE_VIDEO | MACHINE_APM,  /* Machine has onboard sound: Crystal CS4232-KQ */
+        .ram       = {
+            .min  = 8192,
+            .max  = 131072,
+            .step = 8192
+        },
+        .nvrmask                  = 255,
+        .jumpered_ecp_dma         = MACHINE_DMA_3,
+        .default_jumpered_ecp_dma = 3,
+        .kbc_device               = NULL,
+        .kbc_params               = 0x00000000,
+        .kbc_p1                   = 0x000044f0,
+        .gpio                     = 0xffffffff,
+        .gpio_acpi                = 0xffffffff,
+        .device                   = NULL,
+        .kbd_device               = NULL,
+        .fdc_device               = NULL,
+        .sio_device               = NULL,
+        .vid_device               = &mach64ct_device_onboard,
+        .snd_device               = NULL,
+        .net_device               = NULL
+    },
+    /* According to tests from real hardware: This has AMI MegaKey KBC firmware on the
+       PC87306 Super I/O chip, command 0xA1 returns '5'.
+       Command 0xA0 copyright string: (C)1994 AMI . */
+    {
         .name              = "[i430FX] Intel Advanced/ATX (Thor)",
         .internal_name     = "thor",
         .type              = MACHINE_TYPE_SOCKET7_3V,
@@ -13434,7 +13526,7 @@ const machine_t machines[] = {
         .chipset           = MACHINE_CHIPSET_INTEL_430FX,
         .init              = machine_at_monaco_init,
         .p1_handler        = machine_generic_p1_handler,
-        .gpio_handler      = NULL,
+        .gpio_handler      = machine_at_monaco_gpio_handler,
         .available_flag    = MACHINE_AVAILABLE,
         .gpio_acpi_handler = NULL,
         .cpu               = {
@@ -13462,7 +13554,7 @@ const machine_t machines[] = {
         .kbc_p1                   = 0x000044f0,
         .gpio                     = 0xffffffff,
         .gpio_acpi                = 0xffffffff,
-        .device                   = NULL,
+        .device                   = &monaco_device,
         .kbd_device               = NULL,
         .fdc_device               = NULL,
         .sio_device               = NULL,
@@ -13506,7 +13598,7 @@ const machine_t machines[] = {
         .kbc_p1                   = 0x00000cf0,
         .gpio                     = 0xffffffff,
         .gpio_acpi                = 0xffffffff,
-        .device                   = NULL,
+        .device                   = &ms5119_device,
         .kbd_device               = NULL,
         .fdc_device               = NULL,
         .sio_device               = NULL,
@@ -13639,7 +13731,7 @@ const machine_t machines[] = {
         .kbc_p1                   = 0x000004f0,
         .gpio                     = 0xffffffff,
         .gpio_acpi                = 0xffffffff,
-        .device                   = NULL,
+        .device                   = &fmb_device,
         .kbd_device               = NULL,
         .fdc_device               = NULL,
         .sio_device               = NULL,
@@ -14103,7 +14195,7 @@ const machine_t machines[] = {
     /* KBC firmware is unknown. No PS/2 port is present and no commands outside */
     /* of the base AT KBC command set are used. */
     {
-        .name              = "[VLSI Wildcat] Zeos Pantera Wildcat",
+        .name              = "[VLSI Wildcat] ZEOS Boa 2 (Pantera/Wildcat)",
         .internal_name     = "zeoswildcat",
         .type              = MACHINE_TYPE_SOCKET7_3V,
         .chipset           = MACHINE_CHIPSET_VLSI_WILDCAT,
@@ -15516,7 +15608,7 @@ const machine_t machines[] = {
         .chipset           = MACHINE_CHIPSET_INTEL_430TX,
         .init              = machine_at_optiplexgn_init,
         .p1_handler        = machine_generic_p1_handler,
-        .gpio_handler      = NULL,
+        .gpio_handler      = machine_ap440fx_vs440fx_gpio_handler,
         .available_flag    = MACHINE_AVAILABLE,
         .gpio_acpi_handler = NULL,
         .cpu               = {
@@ -15556,7 +15648,7 @@ const machine_t machines[] = {
     },
     /* [TEST] Has AMI Megakey '5' KBC firmware on the SM(S)C FDC37C67x Super I/O chip. */
     {
-        .name              = "[i430TX] Gateway E-1000",
+        .name              = "[i430TX] Gateway E-1000 (Tomahawk)",
         .internal_name     = "tomahawk",
         .type              = MACHINE_TYPE_SOCKET7,
         .chipset           = MACHINE_CHIPSET_INTEL_430TX,
@@ -15606,7 +15698,7 @@ const machine_t machines[] = {
         .chipset = MACHINE_CHIPSET_INTEL_430TX,
         .init = machine_at_an430tx_init,
         .p1_handler = machine_generic_p1_handler,
-        .gpio_handler = NULL,
+        .gpio_handler      = machine_ap440fx_vs440fx_gpio_handler,
         .available_flag = MACHINE_AVAILABLE,
         .gpio_acpi_handler = NULL,
         .cpu = {
@@ -16431,14 +16523,14 @@ const machine_t machines[] = {
         .cpu               = {
             .package     = CPU_PKG_SOCKET5_7,
             .block       = CPU_BLOCK_NONE,
-            .min_bus     = 66666667,
+            .min_bus     = 60000000,
             .max_bus     = 100000000,
-            .min_voltage = 2000,
+            .min_voltage = 1300,
             .max_voltage = 3520,
             .min_multi   = 1.5,
             .max_multi   = 5.5
         },
-        .bus_flags = MACHINE_PS2_PCIONLY | MACHINE_BUS_USB,
+        .bus_flags = MACHINE_PS2_PCI | MACHINE_BUS_USB,
         .flags     = MACHINE_IDE_DUAL | MACHINE_SOUND | MACHINE_APM | MACHINE_ACPI | MACHINE_GAMEPORT | MACHINE_USB, /* Has internal video: ATI 3D Rage Pro Turbo AGP and sound: Ensoniq ES1373 */
         .ram       = {
             .min  = 8192,
@@ -16687,34 +16779,34 @@ const machine_t machines[] = {
         .snd_device               = NULL,
         .net_device               = NULL
     },
-    /* Has the VIA VT82C596A southbridge with on-chip KBC identical to the VIA
-       VT82C42N. Sadly likely abuses cache on Cyrix 6x86MX and MII CPUs (Cyrix MII being what most socket 7 eMachines PCs used) , so they are blocked and it's thus named after the only known eMachines with an AMD K6-2 CPU here */
+    /* Has the VIA VT82C586B southbridge with on-chip KBC identical to the VIA
+       VT82C42N. */
     {
-        .name              = "[VIA MVP3] eMachines eTower 300k",
-        .internal_name     = "delhi3",
+        .name              = "[VIA MVP3] DFI K6BV3+ (rev. A+)",
+        .internal_name     = "k6bv3p_a",
         .type              = MACHINE_TYPE_SOCKETS7,
         .chipset           = MACHINE_CHIPSET_VIA_APOLLO_MVP3,
-        .init              = machine_at_delhi3_init,
+        .init              = machine_at_k6bv3p_a_init,
         .p1_handler        = machine_generic_p1_handler,
         .gpio_handler      = NULL,
         .available_flag    = MACHINE_AVAILABLE,
         .gpio_acpi_handler = NULL,
         .cpu               = {
             .package     = CPU_PKG_SOCKET5_7,
-            .block       = CPU_BLOCK(CPU_Cx6x86MX),
+            .block       = CPU_BLOCK_NONE,
             .min_bus     = 66666667,
-            .max_bus     = 124242424,
+            .max_bus     = 100000000,
             .min_voltage = 2000,
-            .max_voltage = 3520,
+            .max_voltage = 3500,
             .min_multi   = 1.5,
             .max_multi   = 5.5
         },
-        .bus_flags = MACHINE_PS2_PCI | MACHINE_BUS_USB, /* Has internal video: ATI 3D Rage IIc AGP (Rage 2) */
-        .flags     = MACHINE_IDE_DUAL | MACHINE_APM | MACHINE_ACPI | MACHINE_SOUND | MACHINE_USB,
+        .bus_flags = MACHINE_PS2_AGP | MACHINE_BUS_USB,
+        .flags     = MACHINE_IDE_DUAL | MACHINE_APM | MACHINE_ACPI | MACHINE_USB,
         .ram       = {
-            .min  = 8192,
-            .max  = 524288,
-            .step = 8192
+            .min  = 16384,
+            .max  = 786432,
+            .step = 16384
         },
         .nvrmask                  = 255,
         .jumpered_ecp_dma         = 0,
@@ -16729,7 +16821,7 @@ const machine_t machines[] = {
         .fdc_device               = NULL,
         .sio_device               = NULL,
         .vid_device               = NULL,
-        .snd_device               = &cs4235_onboard_device,
+        .snd_device               = NULL,
         .net_device               = NULL
     },
     /* Has the VIA VT82C586B southbridge with on-chip KBC identical to the VIA
@@ -16865,6 +16957,50 @@ const machine_t machines[] = {
         .sio_device               = NULL,
         .vid_device               = NULL,
         .snd_device               = NULL,
+        .net_device               = NULL
+    },
+    /* Has the VIA VT82C596A southbridge with on-chip KBC identical to the VIA VT82C42N. */
+    {
+        .name              = "[VIA MVP3] TriGem Delhi-III",
+        .internal_name     = "delhi3",
+        .type              = MACHINE_TYPE_SOCKETS7,
+        .chipset           = MACHINE_CHIPSET_VIA_APOLLO_MVP3,
+        .init              = machine_at_delhi3_init,
+        .p1_handler        = machine_generic_p1_handler,
+        .gpio_handler      = NULL,
+        .available_flag    = MACHINE_AVAILABLE,
+        .gpio_acpi_handler = NULL,
+        .cpu               = {
+            .package     = CPU_PKG_SOCKET5_7,
+            .block       = CPU_BLOCK(CPU_Cx6x86MX), /* Sadly it likely abuses cache if using Cyrix 6x86MX and MII CPUs (the latter being what most Socket 7 eMachines PCs used), so they are blocked. */
+            .min_bus     = 66666667,
+            .max_bus     = 124242424,
+            .min_voltage = 2000,
+            .max_voltage = 3520,
+            .min_multi   = 1.5,
+            .max_multi   = 5.5
+        },
+        .bus_flags = MACHINE_PS2_PCI | MACHINE_BUS_USB, /* Has internal video: ATI 3D Rage IIc AGP (Rage 2) */
+        .flags     = MACHINE_IDE_DUAL | MACHINE_APM | MACHINE_ACPI | MACHINE_SOUND | MACHINE_USB,
+        .ram       = {
+            .min  = 8192,
+            .max  = 524288,
+            .step = 8192
+        },
+        .nvrmask                  = 255,
+        .jumpered_ecp_dma         = 0,
+        .default_jumpered_ecp_dma = -1,
+        .kbc_device               = NULL,
+        .kbc_params               = 0x00000000,
+        .kbc_p1                   = 0x00000cf0,
+        .gpio                     = 0xffffffff,
+        .gpio_acpi                = 0xffffffff,
+        .device                   = &delhi3_device,
+        .kbd_device               = NULL,
+        .fdc_device               = NULL,
+        .sio_device               = NULL,
+        .vid_device               = NULL,
+        .snd_device               = &cs4235_onboard_device,
         .net_device               = NULL
     },
 
@@ -17191,7 +17327,7 @@ const machine_t machines[] = {
         .chipset           = MACHINE_CHIPSET_INTEL_440FX,
         .init              = machine_at_ap440fx_init,
         .p1_handler        = machine_generic_p1_handler,
-        .gpio_handler      = NULL,
+        .gpio_handler      = machine_ap440fx_vs440fx_gpio_handler,
         .available_flag    = MACHINE_AVAILABLE,
         .gpio_acpi_handler = NULL,
         .cpu               = {
@@ -17237,7 +17373,7 @@ const machine_t machines[] = {
         .chipset           = MACHINE_CHIPSET_INTEL_440FX,
         .init              = machine_at_vs440fx_init,
         .p1_handler        = machine_generic_p1_handler,
-        .gpio_handler      = NULL,
+        .gpio_handler      = machine_ap440fx_vs440fx_gpio_handler,
         .available_flag    = MACHINE_AVAILABLE,
         .gpio_acpi_handler = NULL,
         .cpu               = {
@@ -17297,7 +17433,7 @@ const machine_t machines[] = {
         .bus_flags = MACHINE_PS2_PCI | MACHINE_BUS_USB,
         .flags     = MACHINE_IDE_DUAL | MACHINE_APM | MACHINE_USB, /* Machine has internal SCSI: Adaptec AIC-7880U */
         .ram       = {
-            .min  = 40960,
+            .min  = 40960, /* does not POST with lower than 40MB; Award and AMI retail BIOSes not affected(?) */
             .max  = 524288,
             .step = 8192
         },
@@ -17644,7 +17780,7 @@ const machine_t machines[] = {
         .chipset           = MACHINE_CHIPSET_INTEL_440LX,
         .init              = machine_at_optiplexgxa_init,
         .p1_handler        = machine_generic_p1_handler,
-        .gpio_handler      = NULL,
+        .gpio_handler      = machine_ap440fx_vs440fx_gpio_handler,
         .available_flag    = MACHINE_AVAILABLE,
         .gpio_acpi_handler = NULL,
         .cpu               = {
@@ -17946,7 +18082,7 @@ const machine_t machines[] = {
         .kbc_p1                   = 0x00000cf0,
         .gpio                     = 0xffffffff,
         .gpio_acpi                = 0xffffffff,
-        .device                   = NULL,
+        .device                   = &ax6bc_device,
         .kbd_device               = NULL,
         .fdc_device               = NULL,
         .sio_device               = NULL,
@@ -18259,7 +18395,7 @@ const machine_t machines[] = {
         .kbc_p1                   = 0x000044f0,
         .gpio                     = 0xffffffff,
         .gpio_acpi                = 0xffffffff,
-        .device                   = NULL,
+        .device                   = &s1846_device,
         .kbd_device               = NULL,
         .fdc_device               = NULL,
         .sio_device               = NULL,
@@ -18272,7 +18408,7 @@ const machine_t machines[] = {
     /* Has a SM(S)C FDC37M60x Super I/O chip with on-chip KBC with most likely
        AMIKey-2 KBC firmware. */
     {
-        .name              = "[i440ZX] HP Vectra VEi 8",
+        .name              = "[i440ZX] MiTAC/Trigon 6110Zu",
         .internal_name     = "vei8",
         .type              = MACHINE_TYPE_SLOT1,
         .chipset           = MACHINE_CHIPSET_INTEL_440ZX,
@@ -18306,7 +18442,7 @@ const machine_t machines[] = {
         .kbc_p1                   = 0x000044f0,
         .gpio                     = 0xffffffff,
         .gpio_acpi                = 0xffffffff,
-        .device                   = NULL,
+        .device                   = &vei8_device,
         .kbd_device               = NULL,
         .fdc_device               = NULL,
         .sio_device               = NULL,
@@ -18774,13 +18910,12 @@ const machine_t machines[] = {
 
     /* Slot 1/Socket 370 machines */
     /* 440BX */
-    /* OEM version of ECS P6BXT-A+ REV 1.3x/2.2x. Has a Winbond W83977EF Super
-       I/O chip with on-chip KBC with AMIKey-2 KBC firmware.*/
+    /* Has a Winbond W83977EF Super I/O chip with on-chip KBC with AMIKey-2 KBC firmware.*/
     {
-        .name              = "[i440BX] Compaq ProSignia S316/318 (Intel)",
+        .name              = "[i440BX] ECS P6BXT-A+",
         .internal_name     = "prosignias31x_bx",
         .type              = MACHINE_TYPE_SLOT1_370,
-        .chipset           = MACHINE_CHIPSET_VIA_APOLLO_PRO_133,
+        .chipset           = MACHINE_CHIPSET_INTEL_440BX,
         .init              = machine_at_prosignias31x_bx_init,
         .p1_handler        = machine_generic_p1_handler,
         .gpio_handler      = NULL,
@@ -18788,9 +18923,9 @@ const machine_t machines[] = {
         .gpio_acpi_handler = NULL,
         .cpu               = {
             .package     = CPU_PKG_SLOT1 | CPU_PKG_SOCKET370,
-            .block       = CPU_BLOCK(CPU_PENTIUMPRO, CPU_CYRIX3S), /* Instability issues with PPro, and garbled text in POST with Cyrix */
+            .block       = CPU_BLOCK(CPU_PENTIUMPRO), /* Instability issues with PPro, and garbled text in POST with Cyrix (latter supported on unofficial v6.00PG BIOS) */
             .min_bus     = 66666667,
-            .max_bus     = 100000000,
+            .max_bus     = 124242424,
             .min_voltage = 1300,
             .max_voltage = 3500,
             .min_multi   = 1.5,
@@ -18811,7 +18946,7 @@ const machine_t machines[] = {
         .kbc_p1                   = 0x00000cf0,
         .gpio                     = 0xffffffff,
         .gpio_acpi                = 0xffffffff,
-        .device                   = NULL,
+        .device                   = &prosignias31x_device,
         .kbd_device               = NULL,
         .fdc_device               = NULL,
         .sio_device               = NULL,
