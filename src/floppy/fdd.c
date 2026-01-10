@@ -104,7 +104,7 @@ static fdd_pending_op_t fdd_pending[FDD_NUM];
 /* BIOS boot status tracking */
 static bios_boot_status_t bios_boot_status = BIOS_BOOT_POST;
 
-char  floppyfns[FDD_NUM][512];
+char  floppyfns[FDD_NUM][MAX_IMAGE_PATH_LEN];
 char *fdd_image_history[FDD_NUM][FLOPPY_IMAGE_HISTORY];
 
 pc_timer_t fdd_poll_time[FDD_NUM];
@@ -419,19 +419,14 @@ fdd_seek(int drive, int track_diff)
 
     fdd_changed[drive] = 0;
 
-    if (fdd[drive].turbo)
+    if (fdd[drive].turbo) {
         fdd_do_seek(drive, fdd[drive].track);
-    else {
+    } else {
         /* Trigger appropriate audio for track movements */
         int actual_track_diff = abs(old_track - fdd[drive].track);
         if (actual_track_diff > 0) {
             /* Multi-track seek */
             fdd_audio_play_multi_track_seek(drive, old_track, fdd[drive].track);
-        }
-
-        if (old_track + track_diff < 0) {
-            fdd_do_seek(drive, fdd[drive].track);
-            return;
         }
 
         fdd_seek_in_progress[drive] = 1;
@@ -489,7 +484,7 @@ fdd_type_invert_densel(int type)
     int ret;
 
     if (drive_types[type].flags & FLAG_PS2)
-        ret = (!!strstr(machine_getname(), "PS/1")) || (!!strstr(machine_getname(), "PS/2")) || (!!strstr(machine_getname(), "PS/55"));
+        ret = (!!strstr(machine_getname(machine), "PS/1")) || (!!strstr(machine_getname(machine), "PS/2")) || (!!strstr(machine_getname(machine), "PS/55"));
     else
         ret = drive_types[type].flags & FLAG_INVERT_DENSEL;
 
