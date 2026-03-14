@@ -1,6 +1,6 @@
 msgid ""
 msgstr ""
-"PO-Revision-Date: 2026-01-28 08:57+0000\n"
+"PO-Revision-Date: 2026-03-10 14:03+0000\n"
 "Last-Translator: OBattler <oubattler@gmail.com>\n"
 "Language-Team: Korean <https://weblate.86box.net/projects/86box/86box/ko/>\n"
 "Language: ko-KR\n"
@@ -351,6 +351,15 @@ msgstr "세로:"
 msgid "Lock to this size"
 msgstr "크기 고정"
 
+msgid "General"
+msgstr "일반"
+
+msgid "Processor"
+msgstr "프로세서"
+
+msgid "Performance"
+msgstr "성능"
+
 msgid "Machine type:"
 msgstr "머신 종류:"
 
@@ -372,8 +381,14 @@ msgstr "속도:"
 msgid "Frequency:"
 msgstr "빈도:"
 
+msgid "%1 MHz"
+msgstr "%1 MHz"
+
 msgid "FPU:"
 msgstr "FPU:"
+
+msgid "Internal"
+msgstr "통합된"
 
 msgid "Wait states:"
 msgstr "대기 상태:"
@@ -396,6 +411,9 @@ msgstr "사용 (현지 시간)"
 msgid "Enabled (UTC)"
 msgstr "사용 (UTC)"
 
+msgid "Use the 486 interpreter for 286 and 386 processors"
+msgstr "286 및 386 프로세서용 486 인터프리터를 사용하십시오"
+
 msgid "Dynamic Recompiler"
 msgstr "동적 재컴파일"
 
@@ -413,6 +431,9 @@ msgstr "비디오 카드:"
 
 msgid "Video #2:"
 msgstr "비디오 카드 2:"
+
+msgid "Accelerators"
+msgstr "가속기"
 
 msgid "Voodoo 1 or 2 Graphics"
 msgstr "Voodoo 1 또는 2 그래픽"
@@ -483,8 +504,8 @@ msgstr "MPU-401 단독 사용"
 msgid "Use FLOAT32 sound"
 msgstr "FLOAT32 사운드 사용"
 
-msgid "FM synth driver"
-msgstr "FM 신디사이저 드라이버"
+msgid "FM synth driver:"
+msgstr "FM 신디사이저 드라이버:"
 
 msgid "Nuked (more accurate)"
 msgstr "Nuked (더 정확한)"
@@ -621,8 +642,8 @@ msgstr "이미지 포맷:"
 msgid "Block Size:"
 msgstr "블록 크기:"
 
-msgid "Floppy drives:"
-msgstr "플로피 드라이브:"
+msgid "Floppy drives"
+msgstr "플로피 드라이브"
 
 msgid "Turbo timings"
 msgstr "고속 동작"
@@ -630,23 +651,26 @@ msgstr "고속 동작"
 msgid "Check BPB"
 msgstr "BPB 확인"
 
-msgid "CD-ROM drives:"
-msgstr "CD-ROM 드라이브:"
+msgid "CD-ROM drives"
+msgstr "CD-ROM 드라이브"
 
-msgid "MO drives:"
-msgstr "광자기 드라이브:"
+msgid "MO drives"
+msgstr "광자기 드라이브"
 
 msgid "MO:"
 msgstr "광자기:"
 
+msgid "Removable disk drives"
+msgstr "제거 가능한 디스크 드라이브"
+
 msgid "Removable disks:"
 msgstr "제거 가능한 디스크:"
 
-msgid "Removable disk drives:"
-msgstr "제거 가능한 디스크 드라이브:"
+msgid "Tape drives"
+msgstr "테이프 드라이브"
 
-msgid "ZIP 250"
-msgstr "ZIP 250"
+msgid "Tape drives:"
+msgstr "테이프 드라이브:"
 
 msgid "ISA RTC:"
 msgstr "ISA RTC 카드:"
@@ -704,6 +728,15 @@ msgstr "제거 가능한 디스크(&R) %1 (%2): %3"
 
 msgid "Removable disk images"
 msgstr "제거 가능한 디스크 이미지"
+
+msgid "Tape %1 (%2): %3"
+msgstr "테이프 %1 (%2): %3"
+
+msgid "&Tape %1 (%2): %3"
+msgstr "테이프(&T) %1 (%2): %3"
+
+msgid "Tape images"
+msgstr "테이프 이미지"
 
 msgid "Image %1"
 msgstr "이미지 %1"
@@ -768,8 +801,14 @@ msgstr "포트 (COM & LPT)"
 msgid "Ports"
 msgstr "포트"
 
+msgid "Serial ports"
+msgstr "시리얼 포트"
+
 msgid "Serial ports:"
 msgstr "시리얼 포트:"
+
+msgid "Parallel ports"
+msgstr "병렬 포트"
 
 msgid "Parallel ports:"
 msgstr "병렬 포트:"
@@ -816,14 +855,8 @@ msgstr "버스"
 msgid "File"
 msgstr "파일"
 
-msgid "C"
-msgstr "C"
-
-msgid "H"
-msgstr "H"
-
-msgid "S"
-msgstr "S"
+msgid "Geometry"
+msgstr "기하학"
 
 msgid "KB"
 msgstr "KB"
@@ -1583,6 +1616,9 @@ msgstr "1.5% 낮은 회전수"
 
 msgid "2% below perfect RPM"
 msgstr "2% 낮은 회전수"
+
+msgid "Creating image…"
+msgstr "이미지 생성 중…"
 
 msgid "(System Default)"
 msgstr "(시스템 기본값)"
@@ -2673,6 +2709,12 @@ msgstr "성능에 미치는 영향"
 msgid "[Generic] RAM Disk (max. speed)"
 msgstr "[일반] RAM 디스크(최대 속도)"
 
+msgid "[Generic] 1983 MFM (3600 RPM)"
+msgstr "[일반] 1983 MFM (3600 RPM)"
+
+msgid "[Generic] 1983 RLL (3600 RPM)"
+msgstr "[일반] 1983 RLL (3600 RPM)"
+
 msgid "[Generic] 1989 (3500 RPM)"
 msgstr "[일반] 1989 (3500 RPM)"
 
@@ -2775,8 +2817,8 @@ msgstr "아래로 이동"
 msgid "Could not load file %1"
 msgstr "파일 %1을 로드할 수 없습니다"
 
-msgid "Key Bindings:"
-msgstr "키 바인딩:"
+msgid "Key bindings"
+msgstr "키 바인딩"
 
 msgid "Action"
 msgstr "행동"
