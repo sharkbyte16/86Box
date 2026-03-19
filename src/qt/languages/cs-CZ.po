@@ -1,6 +1,6 @@
 msgid ""
 msgstr ""
-"PO-Revision-Date: 2026-03-12 16:30+0000\n"
+"PO-Revision-Date: 2026-03-17 02:29+0000\n"
 "Last-Translator: David Hrdlička <hrdlickadavid@outlook.com>\n"
 "Language-Team: Czech <https://weblate.86box.net/projects/86box/86box/cs/>\n"
 "Language: cs-CZ\n"
@@ -1059,14 +1059,8 @@ msgstr "%1 je potřeba pro automatický převod PCL dokumentů do PDF.\n\nJakék
 msgid "Don't show this message again"
 msgstr "Nezobrazovat dále tuto zprávu"
 
-msgid "Don't exit"
-msgstr "Neukončovat"
-
 msgid "Reset"
 msgstr "Resetovat"
-
-msgid "Don't reset"
-msgstr "Neresetovat"
 
 msgid "CD-ROM images"
 msgstr "Obraz CD-ROM disku"
@@ -1572,9 +1566,6 @@ msgstr "DMF (cluster 2048)"
 msgid "2.88 MB"
 msgstr "2.88 MB"
 
-msgid "ZIP 100"
-msgstr "ZIP 100"
-
 msgid "3.5\" 128 MB (ISO 10090)"
 msgstr "3.5\" 128 MB (ISO 10090)"
 
@@ -1701,8 +1692,8 @@ msgstr "&Kurzor/Puk"
 msgid "&Pen"
 msgstr "&Pero"
 
-msgid "&Host CD/DVD Drive (%1:)"
-msgstr "&Jednotka CD/DVD hostitele (%1:)"
+msgid "&Host CD/DVD Drive (%1)"
+msgstr "&Jednotka CD/DVD hostitele (%1)"
 
 msgid "&Connected"
 msgstr "&Připojeno"
