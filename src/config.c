@@ -852,6 +852,10 @@ load_sound(void)
     } else {
         fm_driver = FM_DRV_NUKED;
     }
+
+    p = ini_section_get_string(cat, "sound_output_device", "");
+    strncpy(sound_output_device, p, sizeof(sound_output_device) - 1);
+    sound_output_device[sizeof(sound_output_device) - 1] = '\0';
 }
 
 /* Load "Network" section. */
@@ -1032,6 +1036,21 @@ load_ports(void)
 
         if (serial_passthrough_enabled[c])
             config_log("Serial Port %d: passthrough enabled.\n\n", c + 1);
+
+        /* Migrate serial passthrough config section. Doing it here (instead of
+           the device.c migration path) covers disabled passthroughs as well. */
+        sprintf(temp, "Serial Passthrough Device #%i", c + 1);
+        ini_section_t cat2 = ini_find_section(config, temp);
+        sprintf(temp, "Serial Passthrough #%i", c + 1);
+        if (cat2)
+            ini_rename_section(cat2, temp);
+        else
+            cat2 = ini_find_section(config, temp);
+
+        /* The addition of Windows named pipe client mode in v5.3 made a mess of
+           the enum IDs. Migrate the old HOSTSER ID (now TCP_CLNT) to the new one. */
+        if (ini_section_get_int(cat2, "mode", 0) == 3)
+            ini_section_set_int(cat2, "mode", SERPT_MODE_HOSTSER);
     }
 
     for (int c = 0; c < PARALLEL_MAX; c++) {
@@ -3145,6 +3164,11 @@ save_sound(void)
         ini_section_delete_var(cat, "fm_driver");
     else
         ini_section_set_string(cat, "fm_driver", "ymfm");
+
+    if (sound_output_device[0] == '\0')
+        ini_section_delete_var(cat, "sound_output_device");
+    else
+        ini_section_set_string(cat, "sound_output_device", sound_output_device);
 
     ini_delete_section_if_empty(config, cat);
 }
