@@ -2572,8 +2572,8 @@ da2_recalctimings(da2_t *da2)
     _dispontime *= crtcconst;
     _dispofftime *= crtcconst;
 
-    da2->dispontime  = (uint64_t) _dispontime;
-    da2->dispofftime = (uint64_t) _dispofftime;
+    da2->dispontime  = (uint64_t) (int64_t) _dispontime;
+    da2->dispofftime = (uint64_t) (int64_t) _dispofftime;
     if (da2->dispontime < TIMER_USEC)
         da2->dispontime = TIMER_USEC;
     if (da2->dispofftime < TIMER_USEC)
@@ -2614,14 +2614,14 @@ da2_mapping_update(da2_t *da2)
 }
 
 static uint8_t
-da2_mca_read(int port, void *priv)
+da2_mca_read(const uint16_t port, void *priv)
 {
     da2_t *da2 = (da2_t *) priv;
     return da2->pos_regs[port & 7];
 }
 
 static void
-da2_mca_write(int port, uint8_t val, void *priv)
+da2_mca_write(const uint16_t port, uint8_t val, void *priv)
 {
     da2_t *da2 = (da2_t *) priv;
 
