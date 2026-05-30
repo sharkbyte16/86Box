@@ -4480,8 +4480,8 @@ const machine_t machines[] = {
         .flags     = MACHINE_FLAGS_NONE,
         .ram       = {
             .min  = 640,
-            .max  = 16384,
-            .step = 128
+            .max  = 14976,
+            .step = 512
         },
         .nvrmask                  = 127,
         .jumpered_ecp_dma         = 0,
