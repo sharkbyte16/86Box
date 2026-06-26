@@ -76,7 +76,7 @@
 
 #define ROM_TGUI_9400CXI          "roms/video/tgui9440/9400CXI.VBI"
 #define ROM_TGUI_9440_VLB         "roms/video/tgui9440/trident_9440_vlb.bin"
-#define ROM_TGUI_9440_PCI         "roms/video/tgui9440/BIOS.BIN"
+#define ROM_TGUI_9440_PCI         "roms/video/tgui9440/BIOS_A52.BIN"
 #define ROM_TGUI_96xx             "roms/video/tgui9660/Union.VBI"
 
 #define EXT_CTRL_16BIT            0x01
