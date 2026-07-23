@@ -1,6 +1,6 @@
 msgid ""
 msgstr ""
-"PO-Revision-Date: 2026-05-29 18:36+0000\n"
+"PO-Revision-Date: 2026-07-09 10:25+0000\n"
 "Last-Translator: BlueRain-debug <bluerain.debug@gmail.com>\n"
 "Language-Team: Chinese (Simplified Han script) <https://weblate.86box.net/"
 "projects/86box/86box/zh_Hans/>\n"
@@ -454,6 +454,9 @@ msgstr "XGA 图形"
 msgid "IBM PS/55 Display Adapter Graphics"
 msgstr "IBM PS/55 显示适配器图形"
 
+msgid "Voodoo:"
+msgstr "Voodoo:"
+
 msgid "Keyboard:"
 msgstr "键盘:"
 
@@ -593,7 +596,7 @@ msgid "Controller 4:"
 msgstr "控制器 4:"
 
 msgid "Cassette"
-msgstr "磁带"
+msgstr "盒式磁带"
 
 msgid "Hard disks:"
 msgstr "硬盘:"
@@ -690,6 +693,9 @@ msgstr "检查 BIOS 参数块 (BPB)"
 
 msgid "CD-ROM drives"
 msgstr "光盘驱动器"
+
+msgid "CD-ROM:"
+msgstr "光盘:"
 
 msgid "MO drives"
 msgstr "磁光盘驱动器"
@@ -841,11 +847,35 @@ msgstr "串口"
 msgid "Serial ports:"
 msgstr "串口:"
 
+msgid "COM1:"
+msgstr "COM1:"
+
+msgid "COM2:"
+msgstr "COM2:"
+
+msgid "COM3:"
+msgstr "COM3:"
+
+msgid "COM4:"
+msgstr "COM4:"
+
 msgid "Parallel ports"
 msgstr "并口"
 
 msgid "Parallel ports:"
 msgstr "并口:"
+
+msgid "LPT1:"
+msgstr "LPT1:"
+
+msgid "LPT2:"
+msgstr "LPT2:"
+
+msgid "LPT3:"
+msgstr "LPT3:"
+
+msgid "LPT4:"
+msgstr "LPT4:"
 
 msgid "Storage controllers"
 msgstr "存储控制器"
@@ -1104,22 +1134,22 @@ msgid "Continue"
 msgstr "继续"
 
 msgid "Cassette: %1"
-msgstr "磁带: %1"
+msgstr "盒式磁带: %1"
 
 msgid "C&assette: %1"
-msgstr "磁带: %1(&A)"
+msgstr "盒式磁带: %1(&A)"
 
 msgid "Cassette images"
-msgstr "磁带映像"
+msgstr "盒式磁带镜像"
 
 msgid "Cartridge %1: %2"
-msgstr "卡带 %1: %2"
+msgstr "卡式磁带 %1: %2"
 
 msgid "Car&tridge %1: %2"
-msgstr "卡带 %1: %2(&A)"
+msgstr "卡式磁带 %1: %2(&A)"
 
 msgid "Cartridge images"
-msgstr "卡带映像"
+msgstr "卡式磁带镜像"
 
 msgid "Resume execution"
 msgstr "恢复执行"
@@ -1686,11 +1716,14 @@ msgstr "慢"
 msgid "Fast"
 msgstr "快"
 
-msgid "&Auto-pause on focus loss"
-msgstr "失去焦点时自动暂停(&A)"
+msgid "Auto-pause on focus loss"
+msgstr "失去焦点时自动暂停"
+
+msgid "Auto-pause on dialog boxes"
+msgstr "在弹窗时自动暂停"
 
 msgid "WinBox is no longer supported"
-msgstr "WinBox 不再受支持"
+msgstr "WinBox已不再受支持"
 
 msgid "Development of the WinBox manager stopped in 2022 due to a lack of maintainers. As we direct our efforts towards making 86Box even better, we have made the decision to no longer support WinBox as a manager.\n\nNo further updates will be provided through WinBox, and you may encounter incorrect behavior should you continue using it with newer versions of 86Box. Any bug reports related to WinBox behavior will be closed as invalid.\n\nGo to 86box.net for a list of other managers you can use."
 msgstr "由于缺乏维护者，WinBox 管理器的开发工作已于 2022 年停止。由于我们正努力将 86Box 做得更好，因此决定不再支持 WinBox 作为管理器。\n\nWinBox 将不再提供更新，如果你继续在 86Box 的新版本中使用 WinBox，可能会遇到不正确的行为。任何与 WinBox 行为相关的错误报告都将被视为无效而关闭。\n\n请访问 86box.net，查看你可以使用的其他管理器列表。"
@@ -2279,6 +2312,9 @@ msgstr "高 DMA"
 
 msgid "Control PC speaker"
 msgstr "控制电脑扬声器"
+
+msgid "Control MIDI volume"
+msgstr "控制MIDI音量"
 
 msgid "Memory size"
 msgstr "内存大小"
@@ -2881,10 +2917,10 @@ msgid "Options"
 msgstr "选项"
 
 msgid "Model"
-msgstr "模型"
+msgstr "型号"
 
 msgid "Model:"
-msgstr "模型："
+msgstr "型号："
 
 msgid "Failed to initialize Vulkan renderer."
 msgstr "Vulkan 渲染器初始化失败。"
@@ -2975,6 +3011,12 @@ msgstr "切换暂停"
 
 msgid "Toggle mute"
 msgstr "切换静音"
+
+msgid "Toggle on-screen display"
+msgstr "切换屏幕显示 (OSD)"
+
+msgid "Toggle &on-screen display"
+msgstr "切换屏显菜单 (OSD)(&O)"
 
 msgid "Text files"
 msgstr "文本文件"
@@ -3135,6 +3177,9 @@ msgstr "导出…"
 
 msgid "Export EDID"
 msgstr "导出EDID"
+
+msgid "EDID file \"%s\" is invalid."
+msgstr "EDID 文件“%s”无效。"
 
 msgid "EDID file \"%s\" is too large."
 msgstr "EDID文件 \"%s\" 过大。"
@@ -3343,3 +3388,6 @@ msgstr "932 (日语)"
 
 msgid "938 (Traditional Chinese)"
 msgstr "938 (繁体中文)"
+
+msgid "Sample rate:"
+msgstr "采样率："

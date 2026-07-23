@@ -28,9 +28,6 @@
 
 /* String ID numbers. */
 enum {
-    STRING_MOUSE_CAPTURE,             /* "Click to capture mouse" */
-    STRING_MOUSE_RELEASE,             /* "Press %1 to release mouse" */
-    STRING_MOUSE_RELEASE_MMB,         /* "Press %1 or middle button to release mouse" */
     STRING_NET_ERROR,                 /* "Failed to initialize network driver..." */
     STRING_PCAP_ERROR_NO_DEVICES,     /* "No PCap devices found..." */
     STRING_PCAP_ERROR_INVALID_DEVICE, /* "Invalid PCap device..." */
@@ -41,7 +38,8 @@ enum {
     STRING_HW_NOT_AVAILABLE_DEVICE,   /* "Device \"%s\" is not available..." */
     STRING_GHOSTPCL_ERROR,            /* "Unable to initialize GhostPCL..." */
     STRING_ESCP_ERROR,                /* "Unable to find Dot-Matrix fonts..." */
-    STRING_EDID_TOO_LARGE,            /* "EDID file \"%s\" is too large (%lld bytes)." */
+    STRING_EDID_READ_ERROR,           /* "EDID file \"%s\" is invalid." */
+    STRING_EDID_TOO_LARGE,            /* "EDID file \"%s\" is too large." */
     STRING_CDROM_OPEN_ISO_ERROR,      /* "Unable to open image or folder \"%s\"" */
     STRING_CDROM_OPEN_CUE_ERROR,      /* "Unable to open Cue sheet \"%s\"" */
     STRING_CDROM_OPEN_MDS_ERROR,      /* "Unable to open MDS file \"%s\"" */
@@ -54,6 +52,15 @@ enum {
     STRING_CHARDEV_VCON_IN_USE,       /* "%s: Virtual console already in use by %s" */
     STRING_CHARDEV_TERMINAL_ERROR,    /* "%s: Could not create terminal: %s" */
 };
+
+struct plat_device_vol_locked_t
+{
+    uintptr_t handle_disk;
+    uintptr_t vol_nums;
+    uintptr_t handles_vols[1];
+};
+
+typedef struct plat_device_vol_locked_t plat_device_vol_locked_t;
 
 /* The Win32 API uses _wcsicmp. */
 #ifdef _WIN32
@@ -160,6 +167,11 @@ extern void     plat_set_thread_name(void *thread, const char *name);
 extern void     plat_break(void);
 extern void     plat_send_to_clipboard(unsigned char *rgb, int width, int height);
 extern int      plat_run_command(const char *cmd, const char **env, const char *title);
+extern void     plat_clean_up(void);
+
+/* Windows-specific physical disk handling. */
+extern plat_device_vol_locked_t* plat_lock_volumes(FILE* file);
+extern void                      plat_unlock_volumes(plat_device_vol_locked_t* vol);
 
 /* Resource management. */
 extern char *plat_get_string(int id);

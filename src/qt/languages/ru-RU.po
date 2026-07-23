@@ -1,6 +1,6 @@
 msgid ""
 msgstr ""
-"PO-Revision-Date: 2026-05-29 08:39+0000\n"
+"PO-Revision-Date: 2026-06-17 07:28+0000\n"
 "Last-Translator: Alexander Babikov <lemondrops358@gmail.com>\n"
 "Language-Team: Russian <https://weblate.86box.net/projects/86box/86box/ru/>\n"
 "Language: ru-RU\n"
@@ -454,6 +454,9 @@ msgstr "Ускоритель XGA"
 msgid "IBM PS/55 Display Adapter Graphics"
 msgstr "IBM PS/55 Display Adapter Graphics"
 
+msgid "Voodoo:"
+msgstr "Voodoo:"
+
 msgid "Keyboard:"
 msgstr "Клавиатура:"
 
@@ -691,6 +694,9 @@ msgstr "Проверять BPB"
 msgid "CD-ROM drives"
 msgstr "Дисководы CD-ROM"
 
+msgid "CD-ROM:"
+msgstr "CD-ROM:"
+
 msgid "MO drives"
 msgstr "Магнитооптические дисководы"
 
@@ -841,11 +847,35 @@ msgstr "Последовательные порты"
 msgid "Serial ports:"
 msgstr "Последовательные порты:"
 
+msgid "COM1:"
+msgstr "COM1:"
+
+msgid "COM2:"
+msgstr "COM2:"
+
+msgid "COM3:"
+msgstr "COM3:"
+
+msgid "COM4:"
+msgstr "COM4:"
+
 msgid "Parallel ports"
 msgstr "Параллельные порты"
 
 msgid "Parallel ports:"
 msgstr "Параллельные порты:"
+
+msgid "LPT1:"
+msgstr "LPT1:"
+
+msgid "LPT2:"
+msgstr "LPT2:"
+
+msgid "LPT3:"
+msgstr "LPT3:"
+
+msgid "LPT4:"
+msgstr "LPT4:"
 
 msgid "Storage controllers"
 msgstr "Контроллеры дисков"
@@ -1699,8 +1729,11 @@ msgstr "Медленный"
 msgid "Fast"
 msgstr "Быстрый"
 
-msgid "&Auto-pause on focus loss"
-msgstr "&Автопауза при потере фокуса"
+msgid "Auto-pause on focus loss"
+msgstr "Автопауза при потере фокуса"
+
+msgid "Auto-pause on dialog boxes"
+msgstr "Автопауза при показе диалоговых окон"
 
 msgid "WinBox is no longer supported"
 msgstr "WinBox больше не поддерживается"
@@ -2291,7 +2324,10 @@ msgid "High DMA"
 msgstr "Высокий DMA"
 
 msgid "Control PC speaker"
-msgstr "Управление динамиком ПК"
+msgstr "Управлять динамиком ПК"
+
+msgid "Control MIDI volume"
+msgstr "Управлять громкостью MIDI"
 
 msgid "Memory size"
 msgstr "Размер памяти"
@@ -2687,10 +2723,10 @@ msgid "Obsidian SB50 + Amethyst (2 TMUs)"
 msgstr "Obsidian SB50 + Amethyst (2 TMU)"
 
 msgid "8-bit"
-msgstr "8-бит"
+msgstr "8 бит"
 
 msgid "16-bit"
-msgstr "16-бит"
+msgstr "16 бит"
 
 msgid "Standard (150ns)"
 msgstr "Стандартный (150 нс)"
@@ -2978,16 +3014,22 @@ msgid "Toggle fullscreen"
 msgstr "Переключить полноэкранный режим"
 
 msgid "Toggle UI in fullscreen"
-msgstr "Переключить UI в полноэкранном режиме"
+msgstr "Показать/скрыть интерфейс в полноэкранном режиме"
 
 msgid "Release mouse pointer"
-msgstr "Отпустить указатель мыши"
+msgstr "Освободить курсор мыши"
 
 msgid "Toggle pause"
 msgstr "Переключить паузу"
 
 msgid "Toggle mute"
-msgstr "Переключить беззвучный режим"
+msgstr "Выключить/включить звук"
+
+msgid "Toggle on-screen display"
+msgstr "Показать/скрыть экранное меню"
+
+msgid "Toggle &on-screen display"
+msgstr "Показать/скрыть &экранное меню"
 
 msgid "Text files"
 msgstr "Текстовые файлы"
@@ -3150,6 +3192,9 @@ msgstr "Экспорт…"
 
 msgid "Export EDID"
 msgstr "Экспорт EDID"
+
+msgid "EDID file \"%s\" is invalid."
+msgstr "Файл EDID «%s» некорректен."
 
 msgid "EDID file \"%s\" is too large."
 msgstr "Файл EDID «%s» слишком велик."
@@ -3359,3 +3404,6 @@ msgstr "932 (японский)"
 
 msgid "938 (Traditional Chinese)"
 msgstr "938 (китайский, традиционное письмо)"
+
+msgid "Sample rate:"
+msgstr "Частота дискретизации:"

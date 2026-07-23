@@ -1,7 +1,7 @@
 msgid ""
 msgstr ""
-"PO-Revision-Date: 2026-05-29 19:36+0000\n"
-"Last-Translator: OBattler <oubattler@gmail.com>\n"
+"PO-Revision-Date: 2026-06-07 22:01+0000\n"
+"Last-Translator: Lili Kurek <lili@lili.lgbt>\n"
 "Language-Team: Polish <https://weblate.86box.net/projects/86box/86box/pl/>\n"
 "Language: pl-PL\n"
 "MIME-Version: 1.0\n"
@@ -89,7 +89,7 @@ msgid "&1x"
 msgstr "&1x"
 
 msgid "1.&5x"
-msgstr "1.&5x"
+msgstr "1,&5x"
 
 msgid "&2x"
 msgstr "&2x"
@@ -454,6 +454,9 @@ msgstr "Grafika XGA"
 msgid "IBM PS/55 Display Adapter Graphics"
 msgstr "Karta graficzna IBM PS/55"
 
+msgid "Voodoo:"
+msgstr "Voodoo:"
+
 msgid "Keyboard:"
 msgstr "Klawiatura:"
 
@@ -691,6 +694,9 @@ msgstr "Sprawdzaj BPB"
 msgid "CD-ROM drives"
 msgstr "Napędy CD-ROM"
 
+msgid "CD-ROM:"
+msgstr "CD-ROM:"
+
 msgid "MO drives"
 msgstr "Napędy MO"
 
@@ -841,11 +847,35 @@ msgstr "Porty szeregowe"
 msgid "Serial ports:"
 msgstr "Porty szeregowe:"
 
+msgid "COM1:"
+msgstr "COM1:"
+
+msgid "COM2:"
+msgstr "COM2:"
+
+msgid "COM3:"
+msgstr "COM3:"
+
+msgid "COM4:"
+msgstr "COM4:"
+
 msgid "Parallel ports"
 msgstr "Porty równoległe"
 
 msgid "Parallel ports:"
 msgstr "Porty równoległe:"
+
+msgid "LPT1:"
+msgstr "LPT1:"
+
+msgid "LPT2:"
+msgstr "LPT2:"
+
+msgid "LPT3:"
+msgstr "LPT3:"
+
+msgid "LPT4:"
+msgstr "LPT4:"
 
 msgid "Storage controllers"
 msgstr "Kontrolery pamięci masowej"
@@ -1692,8 +1722,11 @@ msgstr "Powolny"
 msgid "Fast"
 msgstr "Szybki"
 
-msgid "&Auto-pause on focus loss"
-msgstr "&Automatyczna pauza po utracie fokusu"
+msgid "Auto-pause on focus loss"
+msgstr "Automatyczna pauza po utracie fokusu"
+
+msgid "Auto-pause on dialog boxes"
+msgstr ""
 
 msgid "WinBox is no longer supported"
 msgstr "WinBox nie jest już wspierany"
@@ -2285,6 +2318,9 @@ msgstr "Wysokie DMA"
 
 msgid "Control PC speaker"
 msgstr "Kontroluj PC speaker"
+
+msgid "Control MIDI volume"
+msgstr "Kontroluj głośność MIDI"
 
 msgid "Memory size"
 msgstr "Rozmiar pamięci"
@@ -2982,6 +3018,12 @@ msgstr "Przełącz pauzę"
 msgid "Toggle mute"
 msgstr "Przełącz wyciszenie"
 
+msgid "Toggle on-screen display"
+msgstr "Przełącz menu ekranowe"
+
+msgid "Toggle &on-screen display"
+msgstr ""
+
 msgid "Text files"
 msgstr "Pliki tekstowe"
 
@@ -3143,6 +3185,9 @@ msgstr "Eksportuj…"
 
 msgid "Export EDID"
 msgstr "Eksportuj EDID"
+
+msgid "EDID file \"%s\" is invalid."
+msgstr "Nieprawidłowy plik EDID „%s”."
 
 msgid "EDID file \"%s\" is too large."
 msgstr "Plik EDID „%s” jest zbyt duży."
@@ -3354,3 +3399,6 @@ msgstr "932 (japoński)"
 
 msgid "938 (Traditional Chinese)"
 msgstr "938 (chiński uproszczony)"
+
+msgid "Sample rate:"
+msgstr "Częstotliwość próbkowania:"

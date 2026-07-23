@@ -272,7 +272,7 @@ uint16_t espcm3_dpcm_tables[1024] =
 };
 // clang-format on
 
-double low_fir_sb16_coef[5][SB16_NCoef];
+double low_fir_sb16_coef[SB16_NCoef];
 
 #ifdef ENABLE_SB_DSP_LOG
 int sb_dsp_do_log = ENABLE_SB_DSP_LOG;
@@ -301,11 +301,12 @@ sinc(double x)
 }
 
 static void
-recalc_sb16_filter(const int c, const int playback_freq)
+recalc_sb16_filter(const int playback_freq)
 {
     /* Cutoff frequency = playback / 2 */
     int          n;
-    const double fC = ((double) playback_freq) / (double) FREQ_96000;
+    // const double fC = ((double) playback_freq) / (double) FREQ_96000;
+    const double fC = ((double) playback_freq) / (double) (sound_sample_rate << 1);
 
     for (n = 0; n < SB16_NCoef; n++) {
         /* Blackman window */
@@ -315,47 +316,18 @@ recalc_sb16_filter(const int c, const int playback_freq)
         const double h = sinc(2.0 * fC * ((double) n - ((double) (SB16_NCoef - 1) / 2.0)));
 
         /* Create windowed-sinc filter */
-        low_fir_sb16_coef[c][n] = w * h;
+        low_fir_sb16_coef[n] = w * h;
     }
 
-    low_fir_sb16_coef[c][(SB16_NCoef - 1) / 2] = 1.0;
+    low_fir_sb16_coef[(SB16_NCoef - 1) / 2] = 1.0;
 
     double gain = 0.0;
     for (n = 0; n < SB16_NCoef; n++)
-        gain += low_fir_sb16_coef[c][n];
+        gain += low_fir_sb16_coef[n];
 
     /* Normalise filter, to produce unity gain */
     for (n = 0; n < SB16_NCoef; n++)
-        low_fir_sb16_coef[c][n] /= gain;
-}
-
-static void
-recalc_opl_filter(const int playback_freq)
-{
-    /* Cutoff frequency = playback / 2 */
-    int          n;
-    const double fC = ((double) playback_freq) / (double) (FREQ_49716 * 2);
-
-    for (n = 0; n < SB16_NCoef; n++) {
-        /* Blackman window */
-        const double w = 0.42 - (0.5 * cos((2.0 * n * M_PI) / (double) (SB16_NCoef - 1))) +
-                     (0.08 * cos((4.0 * n * M_PI) / (double) (SB16_NCoef - 1)));
-        /* Sinc filter */
-        const double h = sinc(2.0 * fC * ((double) n - ((double) (SB16_NCoef - 1) / 2.0)));
-
-        /* Create windowed-sinc filter */
-        low_fir_sb16_coef[1][n] = w * h;
-    }
-
-    low_fir_sb16_coef[1][(SB16_NCoef - 1) / 2] = 1.0;
-
-    double gain = 0.0;
-    for (n = 0; n < SB16_NCoef; n++)
-        gain += low_fir_sb16_coef[1][n];
-
-    /* Normalise filter, to produce unity gain */
-    for (n = 0; n < SB16_NCoef; n++)
-        low_fir_sb16_coef[1][n] /= gain;
+        low_fir_sb16_coef[n] /= gain;
 }
 
 static void
@@ -397,7 +369,7 @@ sb_update_status(sb_dsp_t *dsp, int bit, int set)
         return;
 
     /* NOTE: not on ES1688 or ES1868 */
-    if (IS_ESS(dsp) && (dsp->sb_subtype != SB_SUBTYPE_ESS_ES1688) && !(ESSreg(0xB1) & 0x10))
+    if (IS_ESS(dsp) && (dsp->sb_subtype != SB_SUBTYPE_ESS_ES1688) && (dsp->sb_subtype != SB_SUBTYPE_ESS_ES1868) && !(ESSreg(0xB1) & 0x10))
         /* If ESS playback, and IRQ disabled, do not fire. */
         return;
 
@@ -417,9 +389,10 @@ sb_update_status(sb_dsp_t *dsp, int bit, int set)
             break;
     }
 
-    /* NOTE: not on ES1688, apparently; investigate on ES1868 */
-    if (IS_ESS(dsp) && (dsp->sb_subtype > SB_SUBTYPE_ESS_ES1688)) {
+    /* NOTE: not on ES1688/ES1788, apparently; investigate on ES1868 */
+    if (IS_ESS(dsp) && (dsp->sb_subtype > SB_SUBTYPE_ESS_ES1868)) {
         /* TODO: Investigate real hardware for this (the ES1887 datasheet documents this bit somewhat oddly.) */
+        /* ES1887 note: Windows NT 3.5x driver fails to initialize after a soft reset if this check is done */
         if (dsp->ess_playback_mode && bit <= 1 && set && !masked) {
             if (!(ESSreg(0xB1) & 0x40)) // if ESS playback, and IRQ disabled, do not fire
             {
@@ -1012,7 +985,7 @@ sb_ess_update_reg_a2(sb_dsp_t *dsp, const uint8_t val)
     ESSreg(0xA2) = val;
 
     if (dsp->sb_freq != temp)
-        recalc_sb16_filter(0, temp);
+        recalc_sb16_filter(temp);
     dsp->sb_freq = temp;
 }
 
@@ -1054,10 +1027,17 @@ sb_ess_write_reg(sb_dsp_t *dsp, const uint8_t reg, uint8_t data)
         case 0xA1: /* Extended Mode Sample Rate Generator */
             {
                 ESSreg(reg) = data;
-                if (data & 0x80)
-                    dsp->sb_freq = (int) (795500UL / (256ul - data));
-                else
-                    dsp->sb_freq = (int) (397700UL / (128ul - data));
+                if ((dsp->sb_subtype == SB_SUBTYPE_ESS_ES1869) && dsp->es1869_divider_mode) {
+                    if (data & 0x80)
+                        dsp->sb_freq = (int) (768000UL / (256ul - data));
+                    else
+                        dsp->sb_freq = (int) (793800UL / (128ul - data));
+                } else {
+                    if (data & 0x80)
+                        dsp->sb_freq = (int) (795500UL / (256ul - data));
+                    else
+                        dsp->sb_freq = (int) (397700UL / (128ul - data));
+                }
                 const double temp          = 1000000.0 / dsp->sb_freq;
                 dsp->sblatchi = dsp->sblatcho = ((double) TIMER_USEC * temp);
 
@@ -1105,21 +1085,23 @@ sb_ess_write_reg(sb_dsp_t *dsp, const uint8_t reg, uint8_t data)
 
         case 0xB1:                                              /* Legacy Audio Interrupt Control */
             ESSreg(reg) = (ESSreg(reg) & 0x0F) + (data & 0xF0); // lower 4 bits not writeable
-            switch (data & 0x0C) {
-                default:
-                    break;
-                case 0x00:
-                    dsp->sb_irqnum = 2;
-                    break;
-                case 0x04:
-                    dsp->sb_irqnum = 5;
-                    break;
-                case 0x08:
-                    dsp->sb_irqnum = 7;
-                    break;
-                case 0x0C:
-                    dsp->sb_irqnum = 10;
-                    break;
+            if ((!dsp->es188x_irq_mode || dsp->sb_subtype <= SB_SUBTYPE_ESS_ES1788) && !dsp->is_chipchat) {
+                switch (data & 0x0C) {
+                    default:
+                        break;
+                    case 0x00:
+                        dsp->sb_irqnum = 2;
+                        break;
+                    case 0x04:
+                        dsp->sb_irqnum = 5;
+                        break;
+                    case 0x08:
+                        dsp->sb_irqnum = 7;
+                        break;
+                    case 0x0C:
+                        dsp->sb_irqnum = 10;
+                        break;
+                }
             }
             sb_dsp_log("Legacy Audio IRQ control=%d.\n", dsp->sb_irqnum);
             sb_ess_update_irq_drq_readback_regs(dsp, false);
@@ -1127,21 +1109,23 @@ sb_ess_write_reg(sb_dsp_t *dsp, const uint8_t reg, uint8_t data)
         case 0xB2: /* DRQ Control */
             chg         = ESSreg(reg) ^ data;
             ESSreg(reg) = (ESSreg(reg) & 0x0F) + (data & 0xF0); // lower 4 bits not writeable
-            switch (data & 0x0C) {
-                default:
-                    break;
-                case 0x00:
-                    dsp->sb_8_dmanum = -1;
-                    break;
-                case 0x04:
-                    dsp->sb_8_dmanum = 0;
-                    break;
-                case 0x08:
-                    dsp->sb_8_dmanum = 1;
-                    break;
-                case 0x0C:
-                    dsp->sb_8_dmanum = 3;
-                    break;
+            if (!dsp->is_chipchat && (dsp->sb_subtype < SB_SUBTYPE_ESS_ES1868)) {
+                switch (data & 0x0C) {
+                    default:
+                        break;
+                    case 0x00:
+                        dsp->sb_8_dmanum = -1;
+                        break;
+                    case 0x04:
+                        dsp->sb_8_dmanum = 0;
+                        break;
+                    case 0x08:
+                        dsp->sb_8_dmanum = 1;
+                        break;
+                    case 0x0C:
+                        dsp->sb_8_dmanum = 3;
+                        break;
+                }
             }
             sb_dsp_log("Legacy Audio DRQ control=%d, chg=%02x.\n", dsp->sb_8_dmanum, chg);
             sb_ess_update_irq_drq_readback_regs(dsp, false);
@@ -1492,7 +1476,7 @@ sb_exec_command(sb_dsp_t *dsp)
             temp                          = 1000000 / temp;
             sb_dsp_log("Sample rate - %ihz (%f)\n", temp, dsp->sblatcho);
             if ((dsp->sb_freq != temp) && (dsp->sb_type >= SB16_DSP_404))
-                recalc_sb16_filter(0, temp);
+                recalc_sb16_filter(temp);
             dsp->sb_freq = temp;
             if (IS_ESS(dsp)) {
                 sb_ess_update_filter_freq(dsp);
@@ -1509,7 +1493,7 @@ sb_exec_command(sb_dsp_t *dsp)
                 dsp->sblatchi = dsp->sblatcho;
                 dsp->sb_timei = dsp->sb_timeo;
                 if (dsp->sb_freq != temp)
-                    recalc_sb16_filter(0, dsp->sb_freq);
+                    recalc_sb16_filter(dsp->sb_freq);
                 dsp->sb_8051_ram[0x13] = dsp->sb_freq & 0xff;
                 dsp->sb_8051_ram[0x14] = (dsp->sb_freq >> 8) & 0xff;
             }
@@ -1855,6 +1839,11 @@ sb_exec_command(sb_dsp_t *dsp)
                         sb_add_data(dsp, 0x80 | ((dsp->mpu != NULL) ? 0x04 : 0x06));
                         break;
                     case SB_SUBTYPE_ESS_ES1688:
+                    case SB_SUBTYPE_ESS_ES1788:
+                    case SB_SUBTYPE_ESS_ES1888:
+                    case SB_SUBTYPE_ESS_ES1887:
+                    case SB_SUBTYPE_ESS_ES1868:
+                    case SB_SUBTYPE_ESS_ES1869:
                         sb_add_data(dsp, 0x68);
                         /*
                            89h:     ES1688, returned by DOSBox-X, determined via Windows driver
@@ -2285,32 +2274,13 @@ sb_dsp_init(sb_dsp_t *dsp, int type, int subtype, void *parent)
     if (IS_ESS(dsp))
         /* Initialize ESS filter to 8 kHz. This will be recalculated when a set frequency command is
            sent. */
-        recalc_sb16_filter(0, 8000 * 2);
+        recalc_sb16_filter(8000 * 2);
     else {
         timer_add(&dsp->irq16_timer, sb_dsp_irq16_poll, dsp, 0);
         /* Initialise SB16 filter to same cutoff as 8-bit SBs (3.2 kHz). This will be recalculated when
            a set frequency command is sent. */
-        recalc_sb16_filter(0, 3200 * 2);
+        recalc_sb16_filter(3200 * 2);
     }
-    if (IS_ESS(dsp) || (dsp->sb_type >= SBPRO_DSP_302)) {
-        /* OPL3 or dual OPL2 is stereo. */
-        if (dsp->sb_has_real_opl)
-            recalc_opl_filter(FREQ_49716 * 2);
-        else
-            recalc_sb16_filter(1, FREQ_48000 * 2);
-    } else {
-        /* OPL2 is mono. */
-        if (dsp->sb_has_real_opl)
-            recalc_opl_filter(FREQ_49716);
-        else
-            recalc_sb16_filter(1, FREQ_48000);
-    }
-    /* CD Audio is stereo. */
-    recalc_sb16_filter(2, FREQ_44100 * 2);
-    /* PC speaker is mono. */
-    recalc_sb16_filter(3, 18939);
-    /* E-MU 8000 is stereo. */
-    recalc_sb16_filter(4, FREQ_44100 * 2);
 
     /* Initialize SB16 8051 RAM and ASP internal RAM */
     memset(dsp->sb_8051_ram, 0x00, sizeof(dsp->sb_8051_ram));

@@ -454,6 +454,9 @@ msgstr "XGA-grafikk"
 msgid "IBM PS/55 Display Adapter Graphics"
 msgstr "IBM PS/55 skjermadapter-grafikk"
 
+msgid "Voodoo:"
+msgstr "Voodoo:"
+
 msgid "Keyboard:"
 msgstr "Tastatur:"
 
@@ -691,6 +694,9 @@ msgstr "Sjekk BPB"
 msgid "CD-ROM drives"
 msgstr "CD-ROM-stasjoner"
 
+msgid "CD-ROM:"
+msgstr "CD-ROM:"
+
 msgid "MO drives"
 msgstr "MO-stasjoner"
 
@@ -841,11 +847,35 @@ msgstr "Seriellporter"
 msgid "Serial ports:"
 msgstr "Seriellporter:"
 
+msgid "COM1:"
+msgstr "COM1:"
+
+msgid "COM2:"
+msgstr "COM2:"
+
+msgid "COM3:"
+msgstr "COM3:"
+
+msgid "COM4:"
+msgstr "COM4:"
+
 msgid "Parallel ports"
 msgstr "Parallellporter"
 
 msgid "Parallel ports:"
 msgstr "Parallellporter:"
+
+msgid "LPT1:"
+msgstr "LPT1:"
+
+msgid "LPT2:"
+msgstr "LPT2:"
+
+msgid "LPT3:"
+msgstr "LPT3:"
+
+msgid "LPT4:"
+msgstr "LPT4:"
 
 msgid "Storage controllers"
 msgstr "Lagringskontrollere"
@@ -1687,8 +1717,11 @@ msgstr "Sakte"
 msgid "Fast"
 msgstr "Rask"
 
-msgid "&Auto-pause on focus loss"
-msgstr "&Automatisk pause ved tap av fokus"
+msgid "Auto-pause on focus loss"
+msgstr "Automatisk pause ved tap av fokus"
+
+msgid "Auto-pause on dialog boxes"
+msgstr ""
 
 msgid "WinBox is no longer supported"
 msgstr "WinBox støttes ikke lenger"
@@ -2280,6 +2313,9 @@ msgstr "Høy DMA"
 
 msgid "Control PC speaker"
 msgstr "Kontroller PC-høyttaler"
+
+msgid "Control MIDI volume"
+msgstr ""
 
 msgid "Memory size"
 msgstr "Minnestørrelse"
@@ -2977,6 +3013,12 @@ msgstr "Veksle pause"
 msgid "Toggle mute"
 msgstr "Veksle lyd av/på"
 
+msgid "Toggle on-screen display"
+msgstr ""
+
+msgid "Toggle &on-screen display"
+msgstr ""
+
 msgid "Text files"
 msgstr "Tekstfiler"
 
@@ -3137,6 +3179,9 @@ msgstr "Eksporter…"
 
 msgid "Export EDID"
 msgstr "Eksporter EDID"
+
+msgid "EDID file \"%s\" is invalid."
+msgstr ""
 
 msgid "EDID file \"%s\" is too large."
 msgstr "EDID-filen \"%s\" er for stor."
@@ -3348,3 +3393,6 @@ msgstr "932 (Japansk)"
 
 msgid "938 (Traditional Chinese)"
 msgstr "938 (Tradisjonell kinesisk)"
+
+msgid "Sample rate:"
+msgstr ""

@@ -668,11 +668,18 @@ scsi_cdrom_set_period(scsi_cdrom_t *dev)
         double  bytes_per_second;
         double  period;
 
-        if (dev->was_cached == -1) {
+        if ((dev->drv->speed > 72) || (dev->was_cached == -1)) {
             if (dev->drv->bus_type == CDROM_BUS_SCSI)
                 dev->callback = -1.0; /* Speed depends on SCSI controller */
-            else
+            else if (dev->was_cached == -1)
                 dev->callback = 512.0 + (scsi_cdrom_bus_speed(dev) * (double) (dev->packet_len));
+            else {
+                const int num = ((dev->drv->bus_type == CDROM_BUS_SCSI) ||
+                                 (dev->block_len == 0)) ? dev->sectors_num :
+                                ((scsi_cdrom_current_mode(dev) == 2) ? 1 : dev->sectors_num);
+
+                dev->callback = scsi_cdrom_bus_speed(dev) * ((double) num) * 2352.0;
+            }
         } else {
             if (dev->was_cached) {
                 dev->callback += 512.0;
@@ -1101,10 +1108,10 @@ scsi_cdrom_read_data(scsi_cdrom_t *dev, const int msf, const int type, const int
 static int
 scsi_cdrom_read_blocks(scsi_cdrom_t *dev)
 {
-    int ret   = 1;
-    int msf   = 0;
-    int type  = dev->sector_type;
-    int flags = dev->sector_flags;
+    int     ret      = 1;
+    int     type     = dev->sector_type;
+    int     flags    = dev->sector_flags;
+    uint8_t ven_type = dev->vendor_type;
 #ifdef ENABLE_SCSI_CDROM_LOG
     int num   = (dev->drv->bus_type == CDROM_BUS_SCSI) ?
                 dev->requested_blocks : 1;
@@ -1113,18 +1120,24 @@ scsi_cdrom_read_blocks(scsi_cdrom_t *dev)
     switch (dev->current_cdb[0]) {
         case GPCMD_READ_CD_MSF_OLD:
         case GPCMD_READ_CD_MSF:
-            msf = 1;
+            /*
+               No setting of MSF because the position is already converted
+               to LBA in scsi_cdrom_command().
+
+               Just force the vendor type 0x00 to avoid any BCD conversion.
+             */
+            ven_type = 0x00;
             fallthrough;
         case GPCMD_PLAY_CD:
         case GPCMD_READ_CD_OLD:
         case GPCMD_READ_CD:
-            type  = (dev->current_cdb[1] >> 2) & 7;
-            flags = dev->current_cdb[9] | (((uint32_t) dev->current_cdb[10]) << 8);
+            type     = (dev->current_cdb[1] >> 2) & 7;
+            flags    = dev->current_cdb[9] | (((uint32_t) dev->current_cdb[10]) << 8);
             break;
         case GPCMD_READ_HEADER:
         case GPCMD_READ_HEADER_SONY:
-            type  = 0x00;
-            flags = 0x20;
+            type     = 0x00;
+            flags    = 0x20;
             break;
         default:
             if (dev->sector_type == 0xff) {
@@ -1143,7 +1156,7 @@ scsi_cdrom_read_blocks(scsi_cdrom_t *dev)
         scsi_cdrom_log(dev->log, "Reading %i blocks starting from %i...\n",
                        num, dev->sector_pos);
 
-        ret = scsi_cdrom_read_data(dev, msf, type, flags, dev->vendor_type);
+        ret = scsi_cdrom_read_data(dev, 0, type, flags, ven_type);
 
         scsi_cdrom_log(dev->log, "Read %i bytes of blocks (ret = %i)...\n",
                        dev->block_len, ret);
@@ -1162,6 +1175,8 @@ scsi_cdrom_insert(void *priv)
 
     /* Make sure all cached sectors are cleared. */
     dev->drv->cached_sector = -1;
+    dev->drv->subc_sector = -1;
+
     dev->toc_cached         = 0;
 
     if (dev->drv->ops == NULL) {
@@ -1400,6 +1415,7 @@ scsi_cdrom_reset(scsi_common_t *sc)
         scsi_cdrom_info         = 0x00000000;
         dev->drv->cd_status    &= ~CD_STATUS_TRANSITION;
         dev->drv->cached_sector = -1;
+        dev->drv->subc_sector   = -1;
         dev->toc_cached         = 0;
     }
 }
@@ -1551,6 +1567,7 @@ scsi_cdrom_cache_toc(scsi_cdrom_t *dev)
         dev->drv->seek_pos      = -150;
         dev->requested_blocks   = 150;
         dev->drv->cached_sector = -1;
+        dev->drv->subc_sector   = -1;
     }
 }
 
@@ -2672,8 +2689,8 @@ scsi_cdrom_command(scsi_common_t *sc, const uint8_t *cdb)
                     alloc_length    = 2856;
 
                     if (msf) {
-                        dev->sector_len = MSFtoLBA(cdb[6], cdb[7], cdb[8]);
-                        dev->sector_pos = MSFtoLBA(cdb[3], cdb[4], cdb[5]);
+                        dev->sector_len = MSFtoLBA(cdb[6], cdb[7], cdb[8]) - 150;
+                        dev->sector_pos = MSFtoLBA(cdb[3], cdb[4], cdb[5]) - 150;
 
                         dev->sector_len -= dev->sector_pos;
                         dev->sector_len++;
@@ -3928,7 +3945,9 @@ scsi_cdrom_drive_reset(const int c)
     dev->cur_lun       = SCSI_LUN_USE_CDB;
 
     dev->toc_cached    = 0;
+
     drv->cached_sector = -1;
+    drv->subc_sector   = -1;
 
     drv->insert        = scsi_cdrom_insert;
     drv->get_volume    = scsi_cdrom_get_volume;
