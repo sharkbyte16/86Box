@@ -459,6 +459,10 @@ typedef struct {
    ADD/SUB/MUL/DIV/SQRT results to single, so such blocks are compiled
    with a round-to-single uop after each of those ops. */
 #define CPU_STATUS_FPU_PC24 (1 << 5)
+/* x87 rounding control != nearest: only FADD's memory-operand form
+   bails to the interpreter for it (other FPU arith always rounds to
+   nearest); such blocks must not be reused once RC changes. */
+#define CPU_STATUS_FPU_RC_NZ (1 << 6)
 #ifdef USE_NEW_DYNAREC
 #    define CPU_STATUS_FLAGS 0xff
 #else
@@ -912,5 +916,7 @@ extern void    wait_cycs(int c, int bus);
 
 #define prefetch_queue_set_suspended(s) prefetch_queue_set_prefetching(!s)
 #define prefetch_queue_get_suspended !prefetch_queue_get_prefetching
+
+extern void    fpu_postamble(void);
 
 #endif /*EMU_CPU_H*/
