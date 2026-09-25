@@ -229,8 +229,7 @@ MediaMenu::refresh(QMenu *parentMenu)
     MachineStatus::iterateRDisk([this, parentMenu](int i) {
         auto *menu     = parentMenu->addMenu("");
         int   t        = rdisk_drives[i].type;
-        QIcon img_icon = ((t == RDISK_TYPE_ZIP_100) || (t == RDISK_TYPE_ZIP_250)) ? QIcon(":/settings/qt/icons/zip_image.ico") : ((t == RDISK_TYPE_JAZ_1GB) || (t == RDISK_TYPE_JAZ_2GB)) ? QIcon(":/settings/qt/icons/jaz_image.ico") : QIcon(":/settings/qt/icons/rdisk_image.ico");
-        menu->addAction(getIconWithIndicator(img_icon, pixmap_size, QIcon::Normal, New), tr("&New image…"), [this, i]() { rdiskNewImage(i); });
+		QIcon img_icon = ((t == RDISK_TYPE_ZIP_100) || (t == RDISK_TYPE_ZIP_250)) ? QIcon(":/settings/qt/icons/zip_image.ico") : ((t == RDISK_TYPE_JAZ_1GB) || (t == RDISK_TYPE_JAZ_2GB)) ? QIcon(":/settings/qt/icons/jaz_image.ico") : ((t == RDISK_TYPE_SYJET_1_5GB) || (t == RDISK_TYPE_SPARQ_1GB)) ? QIcon(":/settings/qt/icons/syquest_image.ico") : QIcon(":/settings/qt/icons/rdisk_image.ico");        menu->addAction(getIconWithIndicator(img_icon, pixmap_size, QIcon::Normal, New), tr("&New image…"), [this, i]() { rdiskNewImage(i); });
         menu->addSeparator();
         menu->addAction(getIconWithIndicator(img_icon, pixmap_size, QIcon::Normal, Browse), tr("&Existing image…"), [this, i]() { rdiskSelectImage(i, false); });
         menu->addAction(getIconWithIndicator(img_icon, pixmap_size, QIcon::Normal, WriteProtectedBrowse), tr("Existing image (&Write-protected)…"), [this, i]() { rdiskSelectImage(i, true); });
@@ -936,8 +935,14 @@ MediaMenu::cdromUpdateMenu(int i)
         case CDROM_BUS_MITSUMI:
             busName = "Mitsumi";
             break;
+        case CDROM_BUS_HITACHI:
+            busName = "Hitachi";
+            break;
         case CDROM_BUS_MKE:
             busName = "Panasonic/MKE";
+            break;
+        case CDROM_BUS_LPT:
+            busName = "LPT";
             break;
     }
 
@@ -1112,6 +1117,9 @@ MediaMenu::rdiskUpdateMenu(int i)
             break;
         case RDISK_BUS_SCSI:
             busName = "SCSI";
+            break;
+        case RDISK_BUS_LPT:
+            busName = "LPT";
             break;
     }
 

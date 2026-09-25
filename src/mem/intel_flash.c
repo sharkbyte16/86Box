@@ -27,6 +27,7 @@
 #include <86box/timer.h>
 #include <86box/nvr.h>
 #include <86box/plat.h>
+#include <86box/flash.h>
 
 #define FLAG_X00     16
 #define FLAG_MICRON   8
@@ -72,7 +73,7 @@ typedef struct flash_t {
     uint32_t block_end[BLOCKS_NUM];
     uint32_t block_len[BLOCKS_NUM];
 
-    mem_mapping_t mapping[4];
+    mem_mapping_t mapping[2];
     mem_mapping_t mapping_h[16];
 } flash_t;
 
@@ -169,6 +170,9 @@ flash_write(uint32_t addr, uint8_t val, void *priv)
     flash_t *dev = (flash_t *) priv;
     uint32_t bb_mask = biosmask & 0xffffe000;
 
+    if (!flash_bios_write_selected(addr))
+        return;
+
     if ((biosmask == 0x3ffff) || (biosmask == 0x7ffff))
         bb_mask &= 0xffffc000;
 
@@ -229,6 +233,9 @@ flash_writew(uint32_t addr, uint16_t val, void *priv)
 {
     flash_t *dev = (flash_t *) priv;
     uint32_t bb_mask = biosmask & 0xffffe000;
+
+    if (!flash_bios_write_selected(addr))
+        return;
 
     if ((biosmask == 0x3ffff) || (biosmask == 0x7ffff))
         bb_mask &= 0xffffc000;
@@ -338,8 +345,8 @@ intel_flash_add_mappings(flash_t *dev)
          */
         memcpy(&dev->array[fbase], &rom[base & biosmask], 0x10000);
 
-        if ((max == 2) || (i >= 2)) {
-            mem_mapping_add(&(dev->mapping[i]), base, 0x10000,
+        if ((max == 2) || (i >= (max - 2))) {
+            mem_mapping_add(&(dev->mapping[i & 1]), base, 0x10000,
                             flash_read, flash_readw, flash_readl,
                             flash_write, flash_writew, flash_writel,
                             dev->array + fbase, MEM_MAPPING_EXTERNAL | MEM_MAPPING_ROM | MEM_MAPPING_ROMCS | MEM_MAPPING_ROM_WS, (void *) dev);

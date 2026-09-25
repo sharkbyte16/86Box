@@ -790,8 +790,7 @@ machine_at_k6bv3p_a_init(const machine_t *model)
 }
 
 /* SiS 530 / 5595 */
-
-static int in530_boot_logo_enabled = 1;
+static int in530_boot_logo = 1;
 
 static const device_config_t in530_config[] = {
     // clang-format off
@@ -856,18 +855,32 @@ static const device_config_t in530_config[] = {
             { .files_no = 0 }
         }
     },
-	/* Boot logo toggle doesn't work yet for the NEC, so disabling until it does */
-    /*{
+	
+	/* Logo module selector:
+	0 = 40 (33 in NEC)
+	1 = 33
+	2 = 3E
+	3 = 3F
+	4 = 3D (missing in all BIOSes so used to disable NEC)
+	5 = 3C
+	*/
+    {
         .name           = "boot_logo",
-        .description    = "Enable Boot Logo",
-        .type           = CONFIG_BINARY,
+        .description    = "Boot Logo",
+        .type           = CONFIG_SELECTION,
         .default_string = NULL,
         .default_int    = 1,
         .file_filter    = NULL,
         .spinner        = { 0 },
-        .selection      = { { 0 } },
+        .selection      = {
+            { .description = "Disabled", .value = 4 },
+            { .description = "Enabled",  .value = 1 },
+            { .description = "Logo 2",   .value = 2 },
+            { .description = "Logo 3",   .value = 3 },
+            { .description = "" }
+        },
         .bios           = { { 0 } }
-    },*/
+    },
     { .name = "", .description = "", .type = CONFIG_END }
     // clang-format on
 };
@@ -887,9 +900,9 @@ const device_t in530_device = {
 };
 
 int
-machine_in530_boot_logo_enabled(void)
+machine_in530_boot_logo(void)
 {
-    return in530_boot_logo_enabled;
+    return in530_boot_logo;
 }
 
 int
@@ -905,8 +918,7 @@ machine_at_in530_init(const machine_t *model)
     device_context(model->device);
     fn  = device_get_bios_file(machine_get_device(machine), device_get_config_bios("bios"), 0);
     ret = bios_load_linear(fn, 0x000c0000, 262144, 0);
-	/* Force full screen boot logo on for now */
-    /* in530_boot_logo_enabled = device_get_config_int("boot_logo"); */
+    in530_boot_logo = device_get_config_int("boot_logo");
     device_context_restore();
 
     machine_at_common_init(model);
@@ -928,6 +940,112 @@ machine_at_in530_init(const machine_t *model)
     /* Ext func high, PNP conf low, BIOS assigns the legacy resources. */
     device_add_params(&w83877_device, (void *) (W83877TF | (W83877_3F0 & ~0x04)));
     device_add(&amd_flash_29f002nbt_device);
+    spd_register(SPD_TYPE_SDRAM, 0x3, 512);
+
+    if (sound_card_current[0] == SOUND_INTERNAL)
+        device_add(machine_get_snd_device(machine));
+
+    return ret;
+}
+
+static const device_config_t ga5smm_config[] = {
+    // clang-format off
+    {
+        .name           = "bios",
+        .description    = "BIOS Version",
+        .type           = CONFIG_BIOS,
+        .default_string = "5smm",
+        .default_int    = 0,
+        .file_filter    = NULL,
+        .spinner        = { 0 },
+        .selection      = { { 0 } },
+        .bios           = {
+            {
+                .name          = "AwardBIOS v4.51PG - Revision 1.0",
+                .internal_name = "5smm_10",
+                .bios_type     = BIOS_NORMAL,
+                .files_no      = 1,
+                .local         = 0,
+                .size          = 262144,
+                .files         = { "roms/machines/5smm/5SMM.10", "" }
+            },
+            {
+                .name          = "AwardBIOS v4.51PG - Revision 1.2b (Compaq OEM)",
+                .internal_name = "5smm_12bcq",
+                .bios_type     = BIOS_NORMAL,
+                .files_no      = 1,
+                .local         = 0,
+                .size          = 262144,
+                .files         = { "roms/machines/5smm/chip30.bin", "" }
+            },
+            {
+                .name          = "AwardBIOS v4.51PG - Revision F1",
+                .internal_name = "5smm_f1",
+                .bios_type     = BIOS_NORMAL,
+                .files_no      = 1,
+                .local         = 0,
+                .size          = 262144,
+                .files         = { "roms/machines/5smm/5smm.f1", "" }
+            },
+            {
+                .name          = "AwardBIOS v4.51PG - Revision F5",
+                .internal_name = "5smm",
+                .bios_type     = BIOS_NORMAL,
+                .files_no      = 1,
+                .local         = 0,
+                .size          = 262144,
+                .files         = { "roms/machines/5smm/5SMM.F5", "" }
+            },
+            { .files_no = 0 }
+        }
+    },
+    { .name = "", .description = "", .type = CONFIG_END }
+    // clang-format on
+};
+
+const device_t ga5smm_device = {
+    .name          = "Gigabyte GA-5SMM",
+    .internal_name = "5smm",
+    .flags         = 0,
+    .local         = 0,
+    .init          = NULL,
+    .close         = NULL,
+    .reset         = NULL,
+    .available     = NULL,
+    .speed_changed = NULL,
+    .force_redraw  = NULL,
+    .config        = ga5smm_config
+};
+
+int
+machine_at_ga5smm_init(const machine_t *model)
+{
+    int         ret = 0;
+    const char *fn;
+
+    /* No ROMs available */
+    if (!device_available(model->device))
+        return ret;
+
+    device_context(model->device);
+    fn  = device_get_bios_file(machine_get_device(machine), device_get_config_bios("bios"), 0);
+    ret = bios_load_linear(fn, 0x000c0000, 262144, 0);
+    device_context_restore();
+
+    machine_at_common_init(model);
+
+    pci_init(PCI_CONFIG_TYPE_1);
+    pci_register_slot(0x00, PCI_CARD_NORTHBRIDGE,     1, 2, 3, 4);
+    pci_register_slot(0x01, PCI_CARD_SOUTHBRIDGE,     0, 0, 0, 0);
+    pci_register_slot(0x02, PCI_CARD_VIDEO,           1, 2, 3, 4); /* guess */
+    pci_register_slot(0x09, PCI_CARD_NORMAL,          1, 2, 3, 4);
+    pci_register_slot(0x0B, PCI_CARD_NORMAL,          2, 3, 4, 1);
+    pci_register_slot(0x0F, PCI_CARD_NORMAL,          3, 4, 1, 2);
+    pci_register_slot(0x0C, PCI_CARD_SOUND,           4, 1, 2, 3); /* guess */
+
+    device_add(&sis_530_device);
+    device_add(&it8661f_device);
+    device_add(&sst_flash_39sf020_device);
     spd_register(SPD_TYPE_SDRAM, 0x3, 512);
 
     if (sound_card_current[0] == SOUND_INTERNAL)

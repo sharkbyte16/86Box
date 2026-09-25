@@ -319,6 +319,7 @@ load_general(void)
     video_filter_method = ini_section_get_int(cat, "video_filter_method", 1);
 
     force_43 = !!ini_section_get_int(cat, "force_43", 0);
+    force_device_aspect = !force_43 && !!ini_section_get_int(cat, "force_device_aspect", 0);
     scale    = ini_section_get_int(cat, "scale", 1);
     if (scale > 9)
         scale = 9;
@@ -793,6 +794,8 @@ load_input_devices(void)
     p = ini_section_get_string(cat, "tablet_type", NULL);
     if (p != NULL)
         tablet_type = tablet_get_from_internal_name(p);
+    else if (machine_get_tablet_device(machine) != NULL)
+        tablet_type = TABLET_TYPE_INTERNAL;   /* machine supplies one */
     else
         tablet_type = 0;
 
@@ -977,6 +980,15 @@ load_sound(void)
         fm_driver = FM_DRV_NUKED;
     }
 
+    memset(sound_input_dev_name, '\0', sizeof(sound_input_dev_name));
+    p = ini_section_get_string(cat, "sound_input_dev_name", "");
+    if (strlen(p) > 511)
+        fatal("Configuration: Length of sound_input_dev_name is more than 511\n");
+    else
+        strncpy(sound_input_dev_name, p, 511);
+
+    sound_input_enabled = !!ini_section_get_int(cat, "sound_input_enabled", 0);
+
     p = ini_section_get_string(cat, "sound_output_device", "");
     strncpy(sound_output_device, p, sizeof(sound_output_device) - 1);
     sound_output_device[sizeof(sound_output_device) - 1] = '\0';
@@ -984,6 +996,10 @@ load_sound(void)
     sound_sample_rate = ini_section_get_int(cat, "sound_sample_rate", FREQ_48000);
     if (sound_sample_rate != FREQ_44100 && sound_sample_rate != FREQ_48000)
         sound_sample_rate = FREQ_48000;
+
+    sb_input_rate = ini_section_get_int(cat, "sound_input_rate", FREQ_44100);
+    if (sb_input_rate != FREQ_44100 && sb_input_rate != FREQ_48000)
+        sb_input_rate = FREQ_44100;
 }
 
 /* Load "Network" section. */
@@ -1420,7 +1436,7 @@ load_storage_controllers(void)
         if (p != NULL)
             hdc_current[c] = hdc_get_from_internal_name(p);
         else
-            hdc_current[c] = 0;
+            hdc_current[c] = -1;
     }
 
     /* Backwards compatibility for single HDC and standalone tertiary/quaternary IDE from v4.2 and older. */
@@ -1430,10 +1446,13 @@ load_storage_controllers(void)
         if (!legacy_cards[i] || (ini_section_get_int(cat, legacy_cards[i], 0) == 1)) {
             /* Migrate to the first available HDC slot. */
             for (; j < (sizeof(hdc_current) / sizeof(hdc_current[0])); j++) {
-                if (!hdc_current[j]) {
+                if (hdc_current[j] == -1) {
                     if (!legacy_cards[i]) {
                         if (!p) {
-                            hdc_current[j] = hdc_get_from_internal_name((j == 0) ? "internal" : "none");
+                            if ((j == 0) && machine_has_flags(machine, MACHINE_HDC))
+                                hdc_current[j] = 1;
+                            else
+                                hdc_current[j] = 0;
                         } else if (!strcmp(p, "xtide_plus")) {
                             hdc_current[j] = hdc_get_from_internal_name("xtide");
                             sprintf(temp, "PC/XT XTIDE #%i", j + 1);
@@ -1456,6 +1475,15 @@ load_storage_controllers(void)
         }
     }
     ini_section_delete_var(cat, "hdc");
+
+    for (int c = min; c < HDC_MAX; c++) {
+        if (hdc_current[c] == -1) {
+            if ((c == 0) && machine_has_flags(machine, MACHINE_HDC))
+                hdc_current[c] = 1;
+            else
+                hdc_current[c] = 0;
+        }
+    }
 
     p = ini_section_get_string(cat, "cdrom_interface", NULL);
     if (p != NULL)
@@ -1912,7 +1940,8 @@ load_floppy_and_cdrom_drives(void)
         cdrom[c].no_check = ini_section_get_int(cat, temp, 0);
 
         sprintf(temp, "cdrom_%02i_type", c + 1);
-        p = ini_section_get_string(cat, temp, cdrom[c].bus_type == CDROM_BUS_MKE ? "cr563" : "86cd");
+        p = ini_section_get_string(cat, temp, cdrom[c].bus_type == CDROM_BUS_HITACHI ? "hitachi_1503s" :
+                                       cdrom[c].bus_type == CDROM_BUS_MKE ? "cr563" : "86cd");
         /* TODO: Configuration migration, remove when no longer needed. */
         int cdrom_type = cdrom_get_from_internal_name(!strcmp(p, "goldstar") ? "goldstar_r560b" : p);
         if (cdrom_type == -1) {
@@ -1931,10 +1960,12 @@ load_floppy_and_cdrom_drives(void)
         /* Default values, needed for proper operation of the Settings dialog. */
         cdrom[c].mke_channel = cdrom[c].ide_channel = cdrom[c].scsi_device_id = c & 3;
 
-        if (cdrom[c].bus_type == CDROM_BUS_MKE) {
-            char *type = cdrom_get_internal_name(cdrom_get_type(c));
-
-            if (strstr(type, "cr56") == NULL)
+        if (cdrom[c].bus_type == CDROM_BUS_HITACHI) {
+            cdrom_set_type(c, cdrom_get_from_internal_name("hitachi_1503s"));
+            sprintf(temp, "cdrom_%02i_hitachi_channel", c + 1);
+            cdrom[c].hitachi_channel = ini_section_get_int(cat, temp, c & 3) & 3;
+        } else if (cdrom[c].bus_type == CDROM_BUS_MKE) {
+            if (cdrom_drive_types[cdrom_get_type(c)].bus_type != BUS_TYPE_MKE)
                 cdrom_set_type(c, cdrom_get_from_internal_name("cr563_075"));
 
             sprintf(temp, "cdrom_%02i_mke_channel", c + 1);
@@ -1954,6 +1985,12 @@ load_floppy_and_cdrom_drives(void)
 
             if (cdrom[c].ide_channel > 7)
                 cdrom[c].ide_channel = 7;
+        } else if (cdrom[c].bus_type == CDROM_BUS_LPT) {
+            sprintf(temp, "cdrom_%02i_lpt_port", c + 1);
+            cdrom[c].res = ini_section_get_int(cat, temp, 0);
+
+            if (cdrom[c].res >= PARALLEL_MAX)
+                cdrom[c].res = PARALLEL_MAX - 1;
         } else if (cdrom[c].bus_type == CDROM_BUS_SCSI) {
             sprintf(temp, "cdrom_%02i_scsi_location", c + 1);
             sprintf(tmp2, "%01u:%02u", SCSI_BUS_MAX, c & 3);
@@ -1971,6 +2008,11 @@ load_floppy_and_cdrom_drives(void)
                 dev &= 15;
                 cdrom[c].scsi_device_id = (board << 4) + dev;
             }
+        }
+
+        if (cdrom[c].bus_type != CDROM_BUS_HITACHI) {
+            sprintf(temp, "cdrom_%02i_hitachi_channel", c + 1);
+            ini_section_delete_var(cat, temp);
         }
 
         if (cdrom[c].bus_type != CDROM_BUS_MKE) {
@@ -2193,6 +2235,12 @@ load_other_removable_devices(void)
 
             if (rdisk_drives[c].ide_channel > 7)
                 rdisk_drives[c].ide_channel = 7;
+        } else if (rdisk_drives[c].bus_type == RDISK_BUS_LPT) {
+            sprintf(temp, "rdisk_%02i_lpt_port", c + 1);
+            rdisk_drives[c].res = ini_section_get_int(cat, temp, 0);
+
+            if (rdisk_drives[c].res >= PARALLEL_MAX)
+                rdisk_drives[c].res = PARALLEL_MAX - 1;
         } else if (rdisk_drives[c].bus_type == RDISK_BUS_SCSI) {
             sprintf(temp, "rdisk_%02i_scsi_location", c + 1);
             sprintf(tmp2, "%01u:%02u", SCSI_BUS_MAX, c + 2);
@@ -2219,6 +2267,11 @@ load_other_removable_devices(void)
 
         if (rdisk_drives[c].bus_type != RDISK_BUS_SCSI) {
             sprintf(temp, "rdisk_%02i_scsi_location", c + 1);
+            ini_section_delete_var(cat, temp);
+        }
+
+        if (rdisk_drives[c].bus_type != RDISK_BUS_LPT) {
+            sprintf(temp, "rdisk_%02i_lpt_port", c + 1);
             ini_section_delete_var(cat, temp);
         }
 
@@ -3061,6 +3114,11 @@ save_general(void)
     else
         ini_section_set_int(cat, "force_43", force_43);
 
+    if (force_device_aspect == 0)
+        ini_section_delete_var(cat, "force_device_aspect");
+    else
+        ini_section_set_int(cat, "force_device_aspect", force_device_aspect);
+
     if (scale == 1)
         ini_section_delete_var(cat, "scale");
     else
@@ -3555,10 +3613,25 @@ save_sound(void)
     else
         ini_section_set_string(cat, "sound_output_device", sound_output_device);
 
+    if (sound_input_dev_name[0] == '\0')
+        ini_section_delete_var(cat, "sound_input_dev_name");
+    else
+        ini_section_set_string(cat, "sound_input_dev_name", sound_input_dev_name);
+
+    if (sound_input_enabled)
+        ini_section_set_int(cat, "sound_input_enabled", sound_input_enabled);
+    else
+        ini_section_delete_var(cat, "sound_input_enabled");
+
     if (sound_sample_rate == FREQ_48000)
         ini_section_delete_var(cat, "sound_sample_rate");
     else
         ini_section_set_int(cat, "sound_sample_rate", sound_sample_rate);
+
+    if (sb_input_rate == FREQ_44100)
+        ini_section_delete_var(cat, "sound_input_rate");
+    else
+        ini_section_set_int(cat, "sound_input_rate", sb_input_rate);
 
     ini_delete_section_if_empty(config, cat);
 }
@@ -4323,7 +4396,8 @@ save_floppy_and_cdrom_drives(void)
             ini_section_delete_var(cat, temp);
         else {
             /* In case one wants an ATAPI drive on SCSI and vice-versa. */
-            if ((cdrom_drive_types[cdrom_get_type(c)].bus_type != BUS_TYPE_BOTH) &&
+            if ((cdrom[c].bus_type != CDROM_BUS_LPT) &&
+                (cdrom_drive_types[cdrom_get_type(c)].bus_type != BUS_TYPE_BOTH) &&
                 (cdrom_drive_types[cdrom_get_type(c)].bus_type != cdrom[c].bus_type))
                 cdrom[c].bus_type = cdrom_drive_types[cdrom_get_type(c)].bus_type;
 
@@ -4331,6 +4405,12 @@ save_floppy_and_cdrom_drives(void)
                     hdd_bus_to_string(cdrom[c].bus_type, 1));
             ini_section_set_string(cat, temp, tmp2);
         }
+
+        sprintf(temp, "cdrom_%02i_hitachi_channel", c + 1);
+        if (cdrom[c].bus_type != CDROM_BUS_HITACHI)
+            ini_section_delete_var(cat, temp);
+        else
+            ini_section_set_int(cat, temp, cdrom[c].hitachi_channel);
 
         sprintf(temp, "cdrom_%02i_mke_channel", c + 1);
         if (cdrom[c].bus_type != CDROM_BUS_MKE)
@@ -4359,6 +4439,12 @@ save_floppy_and_cdrom_drives(void)
                     cdrom[c].scsi_device_id & 15);
             ini_section_set_string(cat, temp, tmp2);
         }
+
+        sprintf(temp, "cdrom_%02i_lpt_port", c + 1);
+        if (cdrom[c].bus_type != CDROM_BUS_LPT)
+            ini_section_delete_var(cat, temp);
+        else
+            ini_section_set_int(cat, temp, cdrom[c].res);
 
         sprintf(temp, "cdrom_%02i_image_path", c + 1);
         if ((cdrom[c].bus_type == 0) || (strlen(cdrom[c].image_path) == 0))
@@ -4420,6 +4506,12 @@ save_other_removable_devices(void)
                     rdisk_drives[c].scsi_device_id & 15);
             ini_section_set_string(cat, temp, tmp2);
         }
+
+        sprintf(temp, "rdisk_%02i_lpt_port", c + 1);
+        if (rdisk_drives[c].bus_type != RDISK_BUS_LPT)
+            ini_section_delete_var(cat, temp);
+        else
+            ini_section_set_int(cat, temp, rdisk_drives[c].res);
 
         sprintf(temp, "rdisk_%02i_image_path", c + 1);
         if ((rdisk_drives[c].bus_type == 0) || (strlen(rdisk_drives[c].image_path) == 0))

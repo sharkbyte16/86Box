@@ -307,21 +307,33 @@ fdc_is_dma(fdc_t *fdc)
 void
 fdc_request_next_sector_id(fdc_t *fdc)
 {
-    if (fdc->flags & FDC_FLAG_PCJX)
+    if ((fdc->flags & FDC_FLAG_PCJX) || (fdc->flags & FDC_FLAG_PCJR) ||
+             !fdc->dma)
         fdc->stat = 0xb0;
-    else if ((fdc->flags & FDC_FLAG_PCJR) || !fdc->dma)
-        fdc->stat = 0xf0;
     else {
         fdc_log("FDC command %02X: Raise DRQ on request next sector ID\n", fdc->processed_cmd);
         dma_set_drq(fdc->dma_ch, 1);
-        fdc->stat = 0x50;
+        fdc->stat = 0x10;
     }
+}
+
+int
+fdc_data_available(const fdc_t *fdc)
+{
+    int ret = 1;
+
+    if ((fdc->flags & FDC_FLAG_PCJX) || (fdc->flags & FDC_FLAG_PCJR) ||
+        !fdc->dma)
+        ret = !(fdc->stat & 0x80);
+
+    return ret;
 }
 
 void
 fdc_stop_id_request(fdc_t *fdc)
 {
-    fdc->stat &= 0x7f;
+    if (!fdc->dma)
+        fdc->stat &= 0x7f;
 }
 
 int
@@ -340,6 +352,16 @@ int
 fdc_get_format_sectors(fdc_t *fdc)
 {
     return (int) fdc->format_sectors;
+}
+
+static int
+fdc_track0(fdc_t *fdc, int drive)
+{
+    /* The Convertible isolates the controller's drive inputs as well as STEP.
+     * TRK0 is asserted while isolated, allowing PCN reinitialization without
+     * moving the head. The motherboard's position/DIR sense stays physical. */
+    return ((fdc->flags & FDC_FLAG_IBM5140) && fdc->drive_interface_gated) ||
+           fdd_track0(drive);
 }
 
 static void
@@ -658,6 +680,15 @@ fdc_get_densel(fdc_t *fdc, int drive)
     return 0;
 }
 
+/* The PS/1 2121 and 8525 gate arrays report a drive's type code in 3F3h keyed
+   on the drive the DOR has selected, unlike the other PS/2 machines which use
+   a single 2-bit type field. */
+static int
+fdc_ps2_tdr_per_slot(void)
+{
+    return (machines[machine].init == machine_ps1_m2121_init);
+}
+
 static void
 fdc_rate(fdc_t *fdc, int drive)
 {
@@ -894,7 +925,7 @@ fdc_pcjx_dor(fdc_t *fdc, uint8_t val)
     fdc->dor = val;
 }
 
-static void
+void
 fdc_write(uint16_t addr, uint8_t val, void *priv)
 {
     fdc_t *fdc = (fdc_t *) priv;
@@ -1419,7 +1450,7 @@ fdc_write(uint16_t addr, uint8_t val, void *priv)
                                    as a result line, so none of these apply.
                                  */
                                 if (!fdd_tape_present(drive_num) &&
-                                    ((drive_num >= FDD_NUM) || !fdd_get_flags(drive_num) || !motoron[drive_num] || fdd_track0(drive_num))) {
+                                    ((drive_num >= FDD_NUM) || !fdd_get_flags(drive_num) || !motoron[drive_num] || fdc_track0(fdc, drive_num))) {
                                     fdc_log("Failed recalibrate\n");
                                     if ((drive_num >= FDD_NUM) || !fdd_get_flags(drive_num) || !motoron[drive_num])
                                         fdc->st0 = 0x70 | (fdc->params[0] & 3);
@@ -1603,7 +1634,7 @@ fdc_read(uint16_t addr, void *priv)
                         ret |= 0x02;
                     if (!fdd_get_head(drive))          /* nHDSEL */
                         ret |= 0x08;
-                    if (fdd_track0(drive))             /* TRK0 */
+                    if (fdc_track0(fdc, drive))         /* TRK0 */
                         ret |= 0x10;
                     if (fdc->step)                     /* STEP */
                         ret |= 0x20;
@@ -1622,7 +1653,7 @@ fdc_read(uint16_t addr, void *priv)
                         ret |= 0x02;
                     if (fdd_get_head(drive))           /* HDSEL */
                         ret |= 0x08;
-                    if (!fdd_track0(drive))            /* nTRK0 */
+                    if (!fdc_track0(fdc, drive))        /* nTRK0 */
                         ret |= 0x10;
                     if (fdc->step)                     /* STEP */
                         ret |= 0x20;
@@ -1688,26 +1719,31 @@ fdc_read(uint16_t addr, void *priv)
                 drive = real_drive(fdc, fdc->dor & 3);
                 /* TODO: FDC_FLAG_PS2_TDR? */
                 if ((fdc->flags & FDC_FLAG_PS2) || (fdc->flags & FDC_FLAG_PS2_MCA)) {
-                    /* PS/1 Model 2121 seems return drive type in port
-                     * 0x3f3, despite the 82077AA fdc_t not implementing
-                     * this. This is presumably implemented outside the
-                     * fdc_t on one of the motherboard's support chips.
-                     *
-                     * Confirmed: 00=1.44M 3.5
-                     *        10=2.88M 3.5
-                     *        20=1.2M 5.25
-                     *        30=1.2M 5.25
-                     *
-                     * as reported by Configur.exe.
-                     */
-                    if (fdd_is_525(drive))
+                    /* 2121/25sx: the gate array reports one type code per
+                       selectable drive. Both ROMs decode bits 7-6 and 5-4
+                       as the drive type, where only 0x80 (type 4, 1.44MB)
+                       and 0x50 (type 6, 2.88MB) are valid and anything else 
+                       reads as "no drive"; the same ROMs probe presence with
+                       the DOR motor bits cleared. */
+                    if (fdc_ps2_tdr_per_slot()) {
+                        if (!fdd_get_type(drive))
+                            ret = 0x00;
+                        else if (!(fdc->dor & 0x30))
+                            ret = 0xf0;
+                        else if (fdd_is_ed(drive))
+                            ret = 0x50;
+                        else
+                            ret = 0x80;
+                    }
+                    else if (fdd_is_525(drive))
                         ret = 0x20;
                     else if (fdd_is_ed(drive))
                         ret = 0x10;
                     else
                         ret = 0x00;
-                    /* PS/55 POST throws an error and halt if ret = 1 or 2, somehow. */
-                } else if (!fdc->enh_mode)
+                }
+                /* PS/55 POST throws an error and halt if ret = 1 or 2, somehow. */
+                else if (!fdc->enh_mode)
                     ret = 0x20;
                 else if (fdc->flags & FDC_FLAG_SMC661)
                     ret = (fdc->densel_force << 3) | ((!!fdc->swap) << 5) | (fdc->media_id << 6);
@@ -1952,7 +1988,7 @@ fdc_callback(void *priv)
             if (fdd_is_double_sided(real_drive(fdc, fdc->drive)))
                 fdc->res[10] |= 0x08;
             if ((real_drive(fdc, fdc->drive) != 1) || fdc->drv2en) {
-                if (fdd_track0(real_drive(fdc, fdc->drive)))
+                if (fdc_track0(fdc, real_drive(fdc, fdc->drive)))
                     fdc->res[10] |= 0x10;
             }
             if (writeprot[fdc->drive])
@@ -2118,7 +2154,7 @@ fdc_callback(void *priv)
             drive_num                    = real_drive(fdc, fdc->rw_drive);
             fdc->st0                     = 0x20 | (fdc->params[0] & 3);
             fdd_set_head(fdc->rw_drive, 0);
-            if (!fdd_track0(drive_num))
+            if (!fdc_track0(fdc, drive_num))
                 fdc->st0 |= 0x50;
             fdc->stat = 0x10 | (1 << fdc->rw_drive);
             if (fdd_get_turbo(drive_num)) {
@@ -2777,7 +2813,7 @@ fdc_reset(void *priv)
     fdc->max_track = (fdc->flags & FDC_FLAG_MORE_TRACKS) ? 85 : 79;
 
     /* The JX motherboard owns every programmable decode alias. */
-    if (!(fdc->flags & FDC_FLAG_PCJX)) {
+    if (!(fdc->flags & (FDC_FLAG_PCJX | FDC_FLAG_IBM5140))) {
         fdc_remove(fdc);
         if (fdc->flags & FDC_FLAG_SEC)
             fdc_set_base(fdc, FDC_SECONDARY_ADDR);
@@ -2787,7 +2823,7 @@ fdc_reset(void *priv)
             fdc_set_base(fdc, FDC_QUATERNARY_ADDR);
         else
             fdc_set_base(fdc, (fdc->flags & FDC_FLAG_PCJR) ? FDC_PRIMARY_PCJR_ADDR : FDC_PRIMARY_ADDR);
-    } else {
+    } else if (fdc->flags & FDC_FLAG_PCJX) {
         fdc_pcjx_dor(fdc, 0);
     }
 
@@ -2887,6 +2923,16 @@ const device_t fdc_xt_device = {
     .speed_changed = NULL,
     .force_redraw  = NULL,
     .config        = NULL
+};
+
+const device_t fdc_ibm5140_device = {
+    .name          = "IBM PC Convertible FDC",
+    .internal_name = "fdc_ibm5140",
+    .flags         = 0,
+    .local         = FDC_FLAG_IBM5140 | FDC_FLAG_NEC | FDC_FLAG_NO_TDR | FDC_FLAG_IRQ_ON_NOOP_SEEK,
+    .init          = fdc_init,
+    .close         = fdc_close,
+    .reset         = fdc_reset
 };
 
 const device_t fdc_xt_sec_device = {

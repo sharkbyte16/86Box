@@ -25,10 +25,14 @@
 #include <86box/86box.h>
 #include <86box/device.h>
 #include <86box/config.h>
+/* lpt.h declares lpt_t only if timer.h has been seen first. */
+#include <86box/timer.h>
+#include <86box/lpt.h>
 #include <86box/cdrom.h>
 #include <86box/cdrom_image.h>
 #include <86box/cdrom_interface.h>
 #include <86box/cdrom_mitsumi.h>
+#include <86box/cdrom_hitachi.h>
 #include <86box/cdrom_mke.h>
 #include <86box/crc.h>
 #include <86box/log.h>
@@ -129,6 +133,7 @@ static const struct {
     { &mitsumi_cdrom_device         },
     { &mke_cdrom_noncreative_device },
     { &mke_cdrom_device             },
+    { &hitachi_cdrom_device         },
     { NULL                          }
     // clang-format on
 };
@@ -3503,6 +3508,16 @@ cdrom_hard_reset(void)
                 case CDROM_BUS_ATAPI:
                 case CDROM_BUS_SCSI:
                     scsi_cdrom_drive_reset(i);
+                    break;
+
+                case CDROM_BUS_LPT:
+                    scsi_cdrom_drive_reset(i);
+                    /*
+                     * The bridge is not a device the user picks: assigning the drive
+                     * to an LPT port is the whole configuration. It claims the port
+                     * with lpt_attach(), first claim wins.
+                     */
+                    device_add_inst(&lpt_bpck_device, dev->res + 1);
                     break;
 
                 default:

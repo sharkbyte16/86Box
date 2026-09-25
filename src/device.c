@@ -249,6 +249,16 @@ device_set_context(device_context_t *ctx, const device_t *dev, int inst)
         { .old = "Sound Blaster PCI 128 (ES1373) (On-Board)", .new = "Creative Sound Blaster PCI 128 (ES1373) (On-Board)" },
         { .old = "Sound Blaster PCI 4.1 (CT5880)", .new = "Creative Sound Blaster PCI 4.1 (CT5880)" },
         { .old = "Sound Blaster PCI 4.1 (CT5880) (On-Board)", .new = "Creative Sound Blaster PCI 4.1 (CT5880) (On-Board)" },
+        { .old = "Gravis UltraSound PnP (Old PnP ROM)", .new = "Gravis UltraSound PnP (Old)" },
+        { .old = "Gravis UltraSound PnP (New PnP ROM)", .new = "Gravis UltraSound PnP (New)" },
+        { .old = "Gravis UltraSound PnP (No CD-ROM)", .new = "Gravis UltraSound PnP (No CD)" },
+        { .old = "Compaq/STB UltraSound 32", .new = "Compaq UltraSound 32" },
+        { .old = "IBM PS/2 Adapter/A for Ethernet Networks (WD8013WP/A, AUI/RJ-45, EFD4/92F0046)", .new = "IBM PS/2 Adapter/A (WD8013WP/A)" },
+        { .old = "IBM PS/2 Adapter/A for Ethernet Networks (WD8013EP/A, AUI/BNC, EFD5)", .new = "IBM PS/2 Adapter/A (WD8013EP/A)" },
+        { .old = "IBM PS/2 Adapter/A for Ethernet Networks (WD8003E/A, AUI/BNC, EFE5)", .new = "IBM PS/2 Adapter/A (WD8003E/A)" },
+        { .old = "Adaptec AHA-2940 Ultra", .new = "Adaptec AHA-2940U" },
+        { .old = "Adaptec AHA-2940 Ultra Wide", .new = "Adaptec AHA-2940UW" },
+        { .old = "Adaptec AHA-2944 Ultra Wide (differential)", .new = "Adaptec AHA-2944UW" },
         { 0 }
     };
 
@@ -617,7 +627,8 @@ device_reset_all(uint32_t match_flags)
 {
     for (uint16_t c = 0; c < DEVICE_MAX; c++) {
         if (devices[c] != NULL) {
-            if ((devices[c]->reset != NULL) && (devices[c]->flags & match_flags))
+            if ((devices[c]->reset != NULL) &&
+                ((match_flags == DEVICE_ALL) || (devices[c]->flags & match_flags)))
                 devices[c]->reset(device_priv[c]);
         }
     }
@@ -928,6 +939,28 @@ device_force_redraw(void)
         if (devices[c] != NULL) {
             if (devices[c]->force_redraw != NULL)
                 devices[c]->force_redraw(device_priv[c]);
+        }
+    }
+}
+
+int
+device_has_power_button(void)
+{
+    for (uint16_t c = 0; c < DEVICE_MAX; c++) {
+        if ((devices[c] != NULL) && (devices[c]->power_button != NULL))
+            return 1;
+    }
+
+    return 0;
+}
+
+void
+device_power_button(void)
+{
+    for (uint16_t c = 0; c < DEVICE_MAX; c++) {
+        if (devices[c] != NULL) {
+            if (devices[c]->power_button != NULL)
+                devices[c]->power_button(device_priv[c]);
         }
     }
 }
