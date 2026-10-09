@@ -31,9 +31,10 @@
  *          Written against the "EtherLink III Parallel Tasking ISA, EISA,
  *          Micro Channel, and PCMCIA Adapter Drivers Technical Reference",
  *          3Com part 09-0398-002B. Register and command names below are
- *          that book's. Plug and Play isolation is not modelled; the ISA
- *          contention mechanism is. Neither is the boot PROM, so the ROM
- *          Size and Base register is decoded but no memory is mapped for it.
+ *          that book's. Both ISA activation mechanisms are modelled, 3Com's
+ *          ID contention and Plug and Play. The boot PROM is: the configuration's
+ *          ROM size and base name the part and its window, and ROM Control
+ *          pages a part of 32 or 64 K through the ISA card's 16 K window.
  *
  *          The transmit and receive FIFO handling follows the Fast
  *          EtherLink EISA model in net_3c59x_eisa.c, which shares the
@@ -55,9 +56,11 @@
 #include <86box/device.h>
 #include <86box/io.h>
 #include <86box/mca.h>
+#include <86box/mem.h>
 #include <86box/pic.h>
 #include <86box/timer.h>
 #include <86box/random.h>
+#include <86box/rom.h>
 #include <86box/thread.h>
 #include <86box/network.h>
 #include <86box/nvr.h>
@@ -85,7 +88,7 @@ el3_log(const char *fmt, ...)
 /* The ISA cards, by EEPROM Product ID. */
 enum {
     BOARD_TPO   = 0, /* 3C509B-TPO: 10BASE-T */
-    BOARD_TP    = 1, /* 3C509B-TP: 10BASE-T and AUI */
+    BOARD_TPAUI = 1, /* 3C509B-TP: 10BASE-T and AUI */
     BOARD_COMBO = 2, /* 3C509B-COMBO: 10BASE-T, 10BASE2 and AUI */
     BOARD_BNC   = 3  /* 3C509B: 10BASE2 and AUI */
 };
@@ -125,6 +128,11 @@ static const el3_variant_t el3_mca_variants[2] = {
     { MCA_ADAPTER_ID_COAX, 0xc000, 0x30 },
     { MCA_ADAPTER_ID_TP,   0x0000, 0x22 }
 };
+
+/* The boot EPROM's image, in the layout the ROM directory uses. */
+#define ROM_PATH_3C509 "roms/network/3c509/BootWare_3C509_v1.0.BIN"
+#define ROM_PATH_3C509B "roms/network/3c509/3C5-TriROMv1.7.BIN"
+#define PROM_MAX        0x10000 /* the largest part ROM SIZE names (7-17) */
 
 /* ---- the register map ---------------------------------------------------- */
 
@@ -305,14 +313,15 @@ typedef struct el3_t {
     uint8_t mca;
     uint8_t pos_regs[8];
 
-    /* The EEPROM file, and the configuration it was built from. */
+    /* The EEPROM file. */
     char    nvr_name[64];
-    uint8_t nvr_stamp[9];
 
-    /* Plug and Play: the card's resource data is EEPROM words 18h-3Fh. */
-    uint8_t pnp;
-    void   *pnp_card;
-    uint8_t pnp_rom[80];
+    /* Plug and Play: the card's resource data is EEPROM words 18h-3Fh, and
+       its power-up registers the configuration the EEPROM last loaded. */
+    uint8_t                pnp;
+    void                  *pnp_card;
+    uint8_t                pnp_rom[80];
+    isapnp_device_config_t pnp_power_up;
 
     /* The ISA activation mechanism. */
     uint8_t  ids_state;
@@ -349,6 +358,18 @@ typedef struct el3_t {
 
     uint32_t internal_config;
     uint8_t  rom_control;
+
+    /* The boot PROM: the EPROM's image, and the part and window the
+       configuration names (el3_rom_window). A paged part is read through
+       its window one 16 KB page at a time, the page being bits 1:0 of the
+       ROM Control register (6-22). */
+    uint8_t      *prom;        /* the image, a power of two long */
+    uint32_t      prom_mask;   /* its length less one */
+    mem_mapping_t prom_mapping;
+    uint32_t      prom_base;   /* the window, 0 when none */
+    uint32_t      prom_window; /* its size */
+    uint32_t      prom_part;   /* the part's size as ROM SIZE names it */
+    uint8_t       prom_paged;  /* the window shows the page ROM Control picks */
 
     uint16_t fifo_diag;
     uint8_t  bist_ctl; /* FIFO Diagnostic's write-only BIST and BFC bits as last written */
@@ -413,6 +434,9 @@ typedef struct el3_t {
 
 static void el3_update_irq(el3_t *dev);
 static void el3_mca_pos_apply(el3_t *dev);
+static void el3_prom_place(el3_t *dev, uint8_t field);
+static void el3_prom_show(el3_t *dev);
+static void el3_isa_prom_update(el3_t *dev);
 static uint16_t el3_status(const el3_t *dev);
 
 /* The card this instance is, from the bus it sits on and the board it was
@@ -451,11 +475,11 @@ static const uint16_t el3_eeprom_image[64] = {
 
 /* The Plug and Play checksums in words 18h-3Fh: the serial identifier's
    LFSR checksum (the ISA Plug and Play specification's, byte 8) and the
-   resource data checksum after the end tag (the sum of the resource data
+   resource data checksum after the end tag (the sum of resource data
    comes to zero). Then word 17h, the secondary checksum, as 3C5X9CFG
    computes it (its routines at 156E:05D4 and 156E:0660): the high byte
-   XORs every byte of words 10h-12h and 18h-3Fh, the low byte those of words
-   13h-16h. Both give the real card's values from its own image. */
+   XORs every byte of words 10h-12h and 18h-3Fh, the low byte those of
+   words 13h-16h. Both give the real card's values from its own image. */
 static void
 el3_pnp_checksums(uint16_t *e)
 {
@@ -500,70 +524,166 @@ el3_pnp_checksums(uint16_t *e)
                           el3_xor_bytes(e, 0x13, 0x16));
 }
 
-/* That image with the configuration the user picked written into it, as
-   3C5X9CFG would: node address, product, transceiver, I/O base and IRQ,
-   and the checksum over them. The node address is packed a byte pair to a
-   word, first byte high. */
+/* Writes an EEPROM word, saying whether it differed. */
+static int
+el3_eeprom_put(uint16_t *e, uint8_t word, uint16_t value)
+{
+    if (e[word] == value)
+        return 0;
+    e[word] = value;
+    return 1;
+}
+
+/* The fields the emulator owns, written over whatever is in the EEPROM:
+   the node address with its OEM copy (words 00h-02h, 0Ah-0Ch), the product,
+   and the Plug and Play serial identifier that carries the node address's last
+   four bytes (words 19h-1Bh), as on the real card. Whether an EPROM is fitted
+   and where it sits, the I/O base, the IRQ and how the card is activated are
+   the configuration software's to set (3C5X9CFG), so they are not touched
+   here. Says whether anything had to change. */
+static int
+el3_eeprom_host_fields(el3_t *dev)
+{
+    const el3_variant_t *var = el3_variant(dev);
+    uint16_t            *e   = dev->eeprom;
+    int                  changed = 0;
+
+    changed |= el3_eeprom_put(e, 0x00, (uint16_t) ((dev->mac[0] << 8) | dev->mac[1]));
+    changed |= el3_eeprom_put(e, 0x01, (uint16_t) ((dev->mac[2] << 8) | dev->mac[3]));
+    changed |= el3_eeprom_put(e, 0x02, (uint16_t) ((dev->mac[4] << 8) | dev->mac[5]));
+    changed |= el3_eeprom_put(e, 0x0a, e[0x00]);
+    changed |= el3_eeprom_put(e, 0x0b, e[0x01]);
+    changed |= el3_eeprom_put(e, 0x0c, e[0x02]);
+    changed |= el3_eeprom_put(e, 0x03, var->identity);
+    changed |= el3_eeprom_put(e, 0x19, var->identity);
+    changed |= el3_eeprom_put(e, 0x1a, (uint16_t) ((dev->mac[4] << 8) | dev->mac[5]));
+    changed |= el3_eeprom_put(e, 0x1b, (uint16_t) ((dev->mac[2] << 8) | dev->mac[3]));
+
+    /* The logical device ID carries the board's product: TCM5090, 5091, 5094 or 5095. */
+    changed |= el3_eeprom_put(e, 0x2d, (uint16_t) ((e[0x2d] & 0x00ff) | ((var->identity & 0xff) << 8)));
+    changed |= el3_eeprom_put(e, 0x2e, (uint16_t) ((e[0x2e] & 0xff00) | (var->identity >> 8)));
+
+    return changed;
+}
+
+/* The checksums the card checks over its EEPROM (7-28): the Plug and Play
+   data's own, and the one over words 00h-0Eh. High byte over words 0-0Eh
+   less 8, 9 and 0Dh; low byte over those three. The real card's own
+   checksum agrees with this, and so does 3C5X9CFG's. */
+static void
+el3_eeprom_checksums(el3_t *dev)
+{
+    uint16_t *e = dev->eeprom;
+    uint8_t   hi;
+    uint8_t   lo;
+
+    el3_pnp_checksums(e);
+
+    hi      = el3_xor_bytes(e, 0x00, 0x07) ^ el3_xor_bytes(e, 0x0a, 0x0c) ^ el3_xor_bytes(e, 0x0e, 0x0e);
+    lo      = el3_xor_bytes(e, 0x08, 0x09) ^ el3_xor_bytes(e, 0x0d, 0x0d);
+    e[0x0f] = (uint16_t) ((hi << 8) | lo);
+}
+
+/* The part and window a ROM field names: ROM SIZE in its bits 5:4 and ROM
+   BASE in 3:0, as Address Configuration bits 13:8 hold them (7-16). ROM
+   SIZE is "the size of the ROM installed", 8, 16, 32 or 64 K. An 8 K part
+   shows whole in an 8 K window, ROM BASE its 8 K step from C0000h; a larger
+   one only through a 16 K window, ROM BASE bit 0 not decoded and 0001b
+   C0000h, "ROMs larger than 16 K ... must be paged using the ROM Page bits
+   in the ROM Control register" (7-17, 7-18). ROM BASE 0000b is no PROM. */
+static void
+el3_rom_window(uint8_t field, uint32_t *base, uint32_t *window, uint32_t *part, uint8_t *paged)
+{
+    const uint32_t step = field & 0x0f;
+    const uint32_t size = 0x2000u << ((field >> 4) & 3);
+
+    *base   = 0x00000;
+    *window = 0;
+    *part   = 0;
+    *paged  = 0;
+    if (step == 0)
+        return;
+
+    *part = size;
+    if (size == 0x2000) {
+        *window = 0x2000;
+        *base   = 0xc0000 + (step << 13);
+    } else {
+        *window = 0x4000;
+        *base   = 0xc0000 + ((step >> 1) << 14);
+        *paged  = (size > 0x4000);
+    }
+}
+
+/* The 3C529's: its POS ROM Size "selects the window size of the boot PROM.
+   The PROM may be 8 K, 16 K, or 32 K", each a whole window -- 32 K at
+   C0000h for 0001b, and at C8000h, D0000h, D8000h for 01xxb, 10xxb, 11xxb
+   (7-11). There is no ROM Control register to page it ("3C509B only",
+   6-22), and no 64 K size. ROM BASE 0000b is no PROM. */
+static void
+el3_mca_rom_window(uint8_t field, uint32_t *base, uint32_t *window, uint32_t *part, uint8_t *paged)
+{
+    const uint32_t step = field & 0x0f;
+    const uint32_t size = 0x2000u << ((field >> 4) & 3);
+
+    *base   = 0x00000;
+    *window = 0;
+    *part   = 0;
+    *paged  = 0;
+    if ((step == 0) || (size > 0x8000))
+        return;
+
+    *part   = size;
+    *window = size;
+    if (size == 0x2000)
+        *base = 0xc0000 + (step << 13);
+    else if (size == 0x4000)
+        *base = 0xc0000 + ((step >> 1) << 14);
+    else
+        *base = 0xc0000 + ((step >> 2) << 15);
+}
+
+/* The EEPROM a card ships with: the image read from a real card, with the
+   settings the configuration software owns set to their factory defaults -
+   I/O base, IRQ, transceiver and no boot PROM (7-16) - and the emulator's
+   own fields on top. */
 static void
 el3_eeprom_build(el3_t *dev, uint16_t base, uint8_t irq)
 {
     const el3_variant_t *var = el3_variant(dev);
     uint16_t            *e   = dev->eeprom;
-    uint8_t              hi;
-    uint8_t              lo;
 
     memcpy(e, el3_eeprom_image, sizeof(dev->eeprom));
 
-    e[0x00] = (uint16_t) ((dev->mac[0] << 8) | dev->mac[1]);
-    e[0x01] = (uint16_t) ((dev->mac[2] << 8) | dev->mac[3]);
-    e[0x02] = (uint16_t) ((dev->mac[4] << 8) | dev->mac[5]);
-    e[0x03] = var->identity;
-    /* No boot ROM is modelled, so the card must not advertise one. */
+    /* The ROM field is left zero: the card ships without an EPROM fitted, and
+       where one is fitted is the EEPROM's business, named from software (7-16). */
     e[0x08] = (uint16_t) ((e[0x08] & ~(AC_XCVR | AC_ROM | AC_IO_BASE)) | var->transceiver | (((base - 0x200) >> 4) & AC_IO_BASE));
     e[0x09] = (uint16_t) ((e[0x09] & 0x0fff) | (irq << 12));
-    e[0x0a] = e[0x00];
-    e[0x0b] = e[0x01];
-    e[0x0c] = e[0x02];
 
     /* Word 13h bits 3:2 load ISA ACTIVATION SELECT (7-23): 00b, both
        mechanisms, with Plug and Play on; 01b, ISA contention only, as the
        card this image was read from was set and as 3C5X9CFG /PNP:N sets it. */
     e[0x13] = dev->pnp ? 0x0000 : 0x0004;
 
-    /* The Plug and Play serial identifier (bytes 0-8 of words 18h-1Ch) and
-       the logical device ID carry the board's product, TCM5090, 5091, 5094
-       or 5095, and the serial number is the node address's last four bytes,
-       as on the real card. */
-    e[0x19] = var->identity;
-    e[0x1a] = (uint16_t) ((dev->mac[4] << 8) | dev->mac[5]);
-    e[0x1b] = (uint16_t) ((dev->mac[2] << 8) | dev->mac[3]);
-    e[0x2d] = (uint16_t) ((e[0x2d] & 0x00ff) | ((var->identity & 0xff) << 8));
-    e[0x2e] = (uint16_t) ((e[0x2e] & 0xff00) | (var->identity >> 8));
-    el3_pnp_checksums(e);
-
-    /* High byte over words 0-0Eh less 8, 9 and 0Dh; low byte over those
-       three. The real card's own checksum agrees with this. */
-    hi      = el3_xor_bytes(e, 0x00, 0x07) ^ el3_xor_bytes(e, 0x0a, 0x0c) ^ el3_xor_bytes(e, 0x0e, 0x0e);
-    lo      = el3_xor_bytes(e, 0x08, 0x09) ^ el3_xor_bytes(e, 0x0d, 0x0d);
-    e[0x0f] = (uint16_t) ((hi << 8) | lo);
+    el3_eeprom_host_fields(dev);
+    el3_eeprom_checksums(dev);
 }
 
 /* The EEPROM is kept in the VM's folder, so what a configuration utility
-   writes survives power-off as it does on the card. The file carries the
-   settings it was built from: if those have since been changed in the
-   device's configuration, the EEPROM is rebuilt from them instead. */
+   writes survives power-off as it does on the card. The file is the EEPROM
+   itself, its 64 words little-endian, nothing of the emulator's in it but
+   the fields it owns. */
 static void
 el3_eeprom_save(const el3_t *dev)
 {
     FILE   *fp = nvr_fopen((char *) dev->nvr_name, "wb");
-    uint8_t buf[sizeof(dev->nvr_stamp) + 128];
+    uint8_t buf[128];
 
     if (fp == NULL)
         return;
-    memcpy(buf, dev->nvr_stamp, sizeof(dev->nvr_stamp));
     for (uint8_t i = 0; i < 64; i++) {
-        buf[sizeof(dev->nvr_stamp) + (i * 2)]     = (uint8_t) dev->eeprom[i];
-        buf[sizeof(dev->nvr_stamp) + (i * 2) + 1] = (uint8_t) (dev->eeprom[i] >> 8);
+        buf[i * 2]     = (uint8_t) dev->eeprom[i];
+        buf[i * 2 + 1] = (uint8_t) (dev->eeprom[i] >> 8);
     }
     fwrite(buf, 1, sizeof(buf), fp);
     fclose(fp);
@@ -573,17 +693,37 @@ static int
 el3_eeprom_restore(el3_t *dev)
 {
     FILE   *fp = nvr_fopen((char *) dev->nvr_name, "rb");
-    uint8_t buf[sizeof(dev->nvr_stamp) + 128];
-    size_t  got;
+    uint8_t buf[128];
+    long    size;
+    int     changed;
 
     if (fp == NULL)
         return 0;
-    got = fread(buf, 1, sizeof(buf), fp);
-    fclose(fp);
-    if ((got != sizeof(buf)) || memcmp(buf, dev->nvr_stamp, sizeof(dev->nvr_stamp)))
+
+    /* The EEPROM is the last 128 bytes of the file. Files written before it
+       was kept on its own have the settings it was built from in front of
+       them; how long that is does not have to be known. */
+    if ((fseek(fp, 0, SEEK_END) != 0) || ((size = ftell(fp)) < (long) sizeof(buf)) ||
+        (fseek(fp, size - (long) sizeof(buf), SEEK_SET) != 0) ||
+        (fread(buf, 1, sizeof(buf), fp) != sizeof(buf))) {
+        fclose(fp);
         return 0;
+    }
+    fclose(fp);
+
     for (uint8_t i = 0; i < 64; i++)
-        dev->eeprom[i] = (uint16_t) (buf[sizeof(dev->nvr_stamp) + (i * 2)] | (buf[sizeof(dev->nvr_stamp) + (i * 2) + 1] << 8));
+        dev->eeprom[i] = (uint16_t) (buf[i * 2] | (buf[i * 2 + 1] << 8));
+
+    /* A board or node address the configuration has since changed takes the
+       fields that name it with it, and the checksums over them. */
+    changed = el3_eeprom_host_fields(dev);
+    if (changed)
+        el3_eeprom_checksums(dev);
+
+    /* Write the file back the way it is kept now: the EEPROM alone, in one
+       piece. */
+    if (changed || (size != (long) sizeof(buf)))
+        el3_eeprom_save(dev);
     return 1;
 }
 
@@ -1260,6 +1400,9 @@ el3_tx_reset(el3_t *dev, uint8_t mask)
 static void el3_deactivate(el3_t *dev);
 static void el3_pnp_update(el3_t *dev);
 static void el3_pnp_load_rom(el3_t *dev);
+static void el3_pnp_load_power_up(el3_t *dev);
+static void el3_pnp_mirror_active(el3_t *dev);
+static void el3_pnp_mirror_config(el3_t *dev);
 
 /* Global Reset. Bit 4 is the auto-initialize state machine: resetting it
    rereads the EEPROM and returns the card to ID_WAIT, inactive, so a driver
@@ -1290,6 +1433,9 @@ el3_global_reset(el3_t *dev, uint8_t mask)
         dev->window         = 0;
         dev->cmd_low        = 0;
         dev->rom_control    = 0;
+        /* The page bits are a reset value too, so the window they place has to
+           follow them back to page 0. */
+        el3_prom_show(dev);
     }
     if (!(mask & 0x10)) {
         dev->eeprom_command       = 0;
@@ -1302,11 +1448,22 @@ el3_global_reset(el3_t *dev, uint8_t mask)
            IRQ from the POS registers instead of the EEPROM (10-1). */
         if (dev->mca)
             el3_mca_pos_apply(dev);
+        else {
+            /* An ISA card takes the boot PROM's window from the Address
+               Configuration register the EEPROM has just loaded into it
+               (7-16): the part is fitted or not, and sits where software
+               put it. */
+            el3_isa_prom_update(dev);
+        }
         /* "Plug and Play configuration is also placed in a reset state"
-           (6-3). */
+           (6-3), and the reset has "the same effect as a power-up reset":
+           Wait for Key and CSN 0, and the Plug and Play registers -- the
+           same registers as Address and Resource Configuration (Table 7-2)
+           -- hold what the EEPROM just loaded into those. */
         if (dev->pnp_card != NULL) {
             el3_pnp_load_rom(dev);
-            isapnp_reset_card(dev->pnp_card);
+            el3_pnp_load_power_up(dev);
+            isapnp_power_up_card(dev->pnp_card);
             el3_pnp_update(dev);
         }
         dev->ids_state = IDS_WAIT;
@@ -1639,7 +1796,7 @@ el3_reg_read(el3_t *dev, uint8_t off)
                 case W3_INTERNAL_CONFIG + 3:
                     return (uint8_t) (dev->internal_config >> ((off & 3) * 8));
                 case W3_ROM_CONTROL:
-                    return dev->rom_control;
+                    return dev->mca ? 0x00 : dev->rom_control; /* 3C509B only (6-22) */
                 case W3_RX_FREE:
                 case W3_RX_FREE + 1:
                     w = (uint16_t) ((dev->rx_used >= dev->rx_size) ? 0 : (dev->rx_size - dev->rx_used));
@@ -1769,11 +1926,16 @@ el3_reg_write(el3_t *dev, uint8_t off, uint8_t val)
                     if (dev->mca)
                         break;
                     dev->address_config = (uint16_t) ((dev->address_config & 0xff00) | (val & 0xbf));
+                    el3_pnp_mirror_config(dev); /* the same register as Plug and Play's (Table 7-2) */
                     break;
                 case W0_ADDRESS_CONFIG + 1:
                     if (dev->mca)
                         break;
                     dev->address_config = (uint16_t) ((dev->address_config & 0x00ff) | (val << 8));
+                    /* ROM SIZE and ROM BASE are this register's: the window
+                       follows them. */
+                    el3_isa_prom_update(dev);
+                    el3_pnp_mirror_config(dev);
                     break;
                 case W0_RESOURCE_CONFIG:
                     dev->resource_config = (uint16_t) ((dev->resource_config & 0xff00) | val);
@@ -1786,6 +1948,7 @@ el3_reg_write(el3_t *dev, uint8_t off, uint8_t val)
                         val = (uint8_t) ((val & 0x0f) | ((dev->resource_config >> 8) & 0xf0));
                     dev->resource_config = (uint16_t) ((dev->resource_config & 0x00ff) | (val << 8));
                     el3_set_irq(dev, el3_irq_of(dev->resource_config));
+                    el3_pnp_mirror_config(dev);
                     break;
                 case W0_EEPROM_COMMAND:
                     el3_eeprom_command(dev, val);
@@ -1828,7 +1991,12 @@ el3_reg_write(el3_t *dev, uint8_t off, uint8_t val)
                     el3_pnp_update(dev);
                     break;
                 case W3_ROM_CONTROL:
+                    /* "ROM Control Register (3C509B only)" (6-22). */
+                    if (dev->mca)
+                        break;
                     dev->rom_control = val & 0x03;
+                    /* Writing the page bits moves the page the window shows. */
+                    el3_prom_show(dev);
                     break;
                 default:
                     break;
@@ -1996,6 +2164,7 @@ el3_deactivate(el3_t *dev)
     io_removehandler(dev->io_base, 0x10, el3_read, el3_readw, el3_readl, el3_write, el3_writew, el3_writel, dev);
     dev->active = 0;
     el3_update_irq(dev);
+    el3_pnp_mirror_active(dev);
 }
 
 static void
@@ -2007,6 +2176,7 @@ el3_activate(el3_t *dev, uint16_t base)
     dev->active = 1;
     el3_log("3C509B: active at %03x, IRQ %i\n", dev->io_base, dev->irq);
     el3_update_irq(dev);
+    el3_pnp_mirror_active(dev);
 }
 
 /* ---- the MCA POS registers --------------------------------------------------- */
@@ -2020,11 +2190,11 @@ el3_activate(el3_t *dev, uint16_t base)
 static void
 el3_mca_pos_apply(el3_t *dev)
 {
-    uint16_t xcvr   = (uint16_t) (dev->pos_regs[4] & 0x03);
-    uint16_t rom    = (uint16_t) ((dev->pos_regs[3] & 0xfc) << 6);
-    uint16_t iobase = (uint16_t) ((dev->pos_regs[4] >> 2) & 0x3f);
-    uint16_t base   = (uint16_t) (0x200 + (iobase * 0x400));
-    uint8_t  irq    = (uint8_t) (dev->pos_regs[5] & 0x0f);
+    uint16_t xcvr      = (uint16_t) (dev->pos_regs[4] & 0x03);
+    uint16_t rom       = (uint16_t) ((dev->pos_regs[3] & 0xfc) << 6);
+    uint16_t iobase    = (uint16_t) ((dev->pos_regs[4] >> 2) & 0x3f);
+    uint16_t base      = (uint16_t) (0x200 + (iobase * 0x400));
+    uint8_t  irq       = (uint8_t) (dev->pos_regs[5] & 0x0f);
 
     dev->address_config  = (uint16_t) ((xcvr << 14) | rom | iobase);
     dev->resource_config = (uint16_t) ((dev->resource_config & 0x0fff) | (irq << 12));
@@ -2032,9 +2202,16 @@ el3_mca_pos_apply(el3_t *dev)
     if (dev->pos_regs[2] & 0x01) {
         el3_activate(dev, base);
         el3_set_irq(dev, el3_irq_of(dev->resource_config));
+
+        /* The POS register's ROM field names the boot PROM's window, its
+           own way (el3_mca_rom_window). */
+        el3_prom_place(dev, (uint8_t) (rom >> 8));
     } else {
         el3_deactivate(dev);
         el3_set_irq(dev, 0);
+
+        /* A disabled adapter holds none of its resources. */
+        el3_prom_place(dev, 0);
     }
 }
 
@@ -2086,8 +2263,10 @@ el3_id_command(el3_t *dev, uint8_t val)
     } else {
         /* Activate: E0h-FEh names the base, FFh keeps the EEPROM's. The
            last value is also EISA mode, which an ISA slot cannot reach. */
-        if (val != 0xff)
+        if (val != 0xff) {
             dev->address_config = (uint16_t) ((dev->address_config & ~AC_IO_BASE) | (val & AC_IO_BASE));
+            el3_pnp_mirror_config(dev); /* the same register as Plug and Play's (Table 7-2) */
+        }
         if ((dev->address_config & AC_IO_BASE) != AC_EISA)
             el3_activate(dev, (uint16_t) (0x200 + ((dev->address_config & AC_IO_BASE) << 4)));
         dev->ids_state = IDS_WAIT;
@@ -2182,10 +2361,111 @@ el3_pnp_addr_write(UNUSED(uint16_t port), UNUSED(uint8_t val), void *priv)
     }
 }
 
+/* Where the window Address Configuration's ROM SIZE and ROM BASE select
+   starts, 0 when they select none (el3_rom_window). */
+static uint32_t
+el3_rom_start(const el3_t *dev)
+{
+    uint32_t base;
+    uint32_t window;
+    uint32_t part;
+    uint8_t  paged;
+
+    el3_rom_window((uint8_t) ((dev->address_config & AC_ROM) >> 8), &base, &window, &part, &paged);
+    return window ? base : 0;
+}
+
+/* The ROM BASE that starts a window at rom, for the part ROM SIZE names: an
+   8 K part's 8 K step, a larger one's 16 K step, 0001b for C0000h (7-17,
+   7-18); 0000b, no PROM, for an address no window of it starts at. */
+static uint8_t
+el3_rom_base_for(const el3_t *dev, uint32_t rom)
+{
+    if (!(dev->address_config & 0x3000)) {
+        if ((rom >= 0xc2000) && (rom <= 0xde000) && !(rom & 0x1fff))
+            return (uint8_t) ((rom - 0xc0000) >> 13);
+        return 0;
+    }
+    if ((rom < 0xc0000) || (rom > 0xdc000) || (rom & 0x3fff))
+        return 0;
+    if (rom == 0xc0000)
+        return 1;
+    return (uint8_t) (((rom - 0xc0000) >> 14) << 1);
+}
+
+/* The Plug and Play resource registers are "Same as" Address and Resource
+   Configuration (Table 7-2): the I/O base unless it is EISA's, the IRQ, the
+   ROM window. The interrupt type is 02h, edge-triggered and active high. */
+static void
+el3_pnp_config_of(const el3_t *dev, isapnp_device_config_t *config)
+{
+    memset(config, 0, sizeof(*config));
+    if ((dev->address_config & AC_IO_BASE) != AC_EISA)
+        config->io[0].base = (uint16_t) (0x200 + ((dev->address_config & AC_IO_BASE) << 4));
+    config->irq[0].irq   = (uint8_t) (dev->resource_config >> 12);
+    config->irq[0].level = 1;
+    config->mem[0].base  = el3_rom_start(dev);
+    config->activate     = dev->active;
+    config->dma[0].dma   = ISAPNP_DMA_DISABLED;
+    config->dma[1].dma   = ISAPNP_DMA_DISABLED;
+}
+
+/* The power-up values Plug and Play loads at a reset: what the EEPROM put
+   in Address and Resource Configuration, the card inactive -- it comes out
+   of reset in ID_WAIT (7-3). */
+static void
+el3_pnp_load_power_up(el3_t *dev)
+{
+    el3_pnp_config_of(dev, &dev->pnp_power_up);
+    dev->pnp_power_up.activate = 0;
+}
+
+/* Activate reads what the card is: "Cards must report their actual active
+   status when the Activate register is read" (Plug and Play ISA 1.0a,
+   5.1), whichever way it was turned on or off. */
+static void
+el3_pnp_mirror_active(el3_t *dev)
+{
+    if (dev->pnp_card != NULL)
+        isapnp_set_reg(dev->pnp_card, 0, 0x30, dev->active);
+}
+
+/* The resource registers as a read finds them after Address or Resource
+   Configuration changed some other way: a window 0 write, an ID sequence
+   activation. */
+static void
+el3_pnp_mirror_config(el3_t *dev)
+{
+    isapnp_device_config_t config;
+
+    if (dev->pnp_card == NULL)
+        return;
+    el3_pnp_config_of(dev, &config);
+    isapnp_set_reg(dev->pnp_card, 0, 0x40, (uint8_t) (config.mem[0].base >> 16));
+    isapnp_set_reg(dev->pnp_card, 0, 0x41, (uint8_t) (config.mem[0].base >> 8));
+    isapnp_set_reg(dev->pnp_card, 0, 0x60, (uint8_t) (config.io[0].base >> 8));
+    isapnp_set_reg(dev->pnp_card, 0, 0x61, (uint8_t) config.io[0].base);
+    isapnp_set_reg(dev->pnp_card, 0, 0x70, config.irq[0].irq);
+}
+
+/* The registers that do not keep what is written: Memory Control reads 0
+   (fixed size), the range length is not a register of this card ("Any Plug
+   and Play registers that are not shown ... return zero when read"), and
+   the interrupt type is 02h (Table 7-2). */
+static void
+el3_pnp_fixed_regs(el3_t *dev)
+{
+    isapnp_set_reg(dev->pnp_card, 0, 0x42, 0x00);
+    isapnp_set_reg(dev->pnp_card, 0, 0x43, 0x00);
+    isapnp_set_reg(dev->pnp_card, 0, 0x44, 0x00);
+    isapnp_set_reg(dev->pnp_card, 0, 0x71, 0x02);
+}
+
 /* The Plug and Play registers for the I/O base, the IRQ and the ROM base
    "are also transferred into their respective Address Configuration and
-   Resource Configuration fields", and Activate turns the card's I/O on
-   and off (7-5). */
+   Resource Configuration fields" as they are written, and Activate turns
+   the card's I/O on and off (7-5). A reset hands over the power-up values,
+   which are what the EEPROM loaded (el3_pnp_load_power_up). */
 static void
 el3_pnp_config_changed(uint8_t ld, isapnp_device_config_t *config, void *priv)
 {
@@ -2198,11 +2478,11 @@ el3_pnp_config_changed(uint8_t ld, isapnp_device_config_t *config, void *priv)
 
     if ((base >= 0x200) && (base <= 0x3e0))
         dev->address_config = (uint16_t) ((dev->address_config & ~AC_IO_BASE) | ((base - 0x200) >> 4));
-    /* An 8 KB ROM window (the resource data's) at C2000h-DE000h: ROM SIZE
-       00b and ROM BASE its 8 KB step (7-17); anything else disables it. */
-    dev->address_config &= (uint16_t) ~AC_ROM;
-    if ((rom >= 0xc2000) && (rom <= 0xde000) && !(rom & 0x1fff))
-        dev->address_config |= (uint16_t) (((rom - 0xc0000) >> 13) << 8);
+    /* The registers hold the window's base and go to ROM BASE; ROM SIZE is
+       the part's, "the size of the ROM installed" (7-16), and stays. The
+       window already selected keeps ROM BASE as it is. */
+    if (rom != el3_rom_start(dev))
+        dev->address_config = (uint16_t) ((dev->address_config & ~0x0f00) | (el3_rom_base_for(dev, rom) << 8));
     dev->resource_config = (uint16_t) ((dev->resource_config & 0x0fff) | ((config->irq[0].irq & 0x0f) << 12));
     el3_set_irq(dev, el3_irq_of(dev->resource_config));
 
@@ -2210,6 +2490,14 @@ el3_pnp_config_changed(uint8_t ld, isapnp_device_config_t *config, void *priv)
         el3_activate(dev, base);
     else
         el3_deactivate(dev);
+
+    /* The window the resource data named goes on the bus the way the
+       reset paths place one, so an activated card shows its PROM where the
+       configuration program put it. */
+    el3_isa_prom_update(dev);
+
+    el3_pnp_fixed_regs(dev);
+    el3_pnp_mirror_active(dev);
 }
 
 /* The serial identifier and resource data are the EEPROM's words 18h-3Fh,
@@ -2255,12 +2543,147 @@ el3_reset(void *priv)
     el3_global_reset((el3_t *) priv, 0);
 }
 
+/* The page of a paged part the window shows: "It is ignored except for ROM
+   sizes of 32 or 64 K" (6-22), and a 32 K part has two pages. */
+static uint32_t
+el3_prom_page(const el3_t *dev)
+{
+    if (!dev->prom_paged)
+        return 0;
+    return dev->rom_control & ((dev->prom_part >> 14) - 1);
+}
+
+/* The EPROM address a read in the window reaches: the offset into the
+   window, the page above it. An image smaller than the part repeats, as a
+   part's unconnected address lines would make it. */
+static uint32_t
+el3_prom_addr(const el3_t *dev, uint32_t addr)
+{
+    return ((el3_prom_page(dev) << 14) | ((addr - dev->prom_base) & (dev->prom_window - 1))) & dev->prom_mask;
+}
+
+static uint8_t
+el3_prom_readb(uint32_t addr, void *priv)
+{
+    const el3_t *dev = (el3_t *) priv;
+
+    return dev->prom[el3_prom_addr(dev, addr)];
+}
+
+static uint16_t
+el3_prom_readw(uint32_t addr, void *priv)
+{
+    return (uint16_t) (el3_prom_readb(addr, priv) | (el3_prom_readb(addr + 1, priv) << 8));
+}
+
+static uint32_t
+el3_prom_readl(uint32_t addr, void *priv)
+{
+    return (uint32_t) (el3_prom_readw(addr, priv) | ((uint32_t) el3_prom_readw(addr + 2, priv) << 16));
+}
+
+/* The boot PROM's image, read the first time a register names a window for
+   it: up to the largest part, padded to a power of two. */
+static int
+el3_prom_load(el3_t *dev)
+{
+    FILE    *fp;
+    long     len;
+    uint32_t size;
+
+    if (dev->prom != NULL)
+        return 1;
+
+    fp = rom_fopen(ROM_PATH_3C509B, "rb");
+    if (fp == NULL) {
+        el3_log("3C509B: no boot PROM image at %s\n", ROM_PATH_3C509B);
+        return 0;
+    }
+    if ((fseek(fp, 0L, SEEK_END) != 0) || ((len = ftell(fp)) <= 0) || (fseek(fp, 0L, SEEK_SET) != 0)) {
+        (void) fclose(fp);
+        return 0;
+    }
+    if (len > PROM_MAX)
+        len = PROM_MAX;
+    for (size = 0x2000; size < (uint32_t) len; size <<= 1)
+        ;
+
+    dev->prom = (uint8_t *) malloc(size);
+    memset(dev->prom, 0xff, size);
+    if (fread(dev->prom, 1, (size_t) len, fp) != (size_t) len) {
+        (void) fclose(fp);
+        free(dev->prom);
+        dev->prom = NULL;
+        return 0;
+    }
+    (void) fclose(fp);
+    dev->prom_mask = size - 1;
+
+    /* Kept off the bus until a register names a window for it. */
+    mem_mapping_add(&dev->prom_mapping, 0xc0000, 0x2000, el3_prom_readb, el3_prom_readw, el3_prom_readl,
+                    NULL, NULL, NULL, NULL, MEM_MAPPING_EXTERNAL, dev);
+    mem_mapping_disable(&dev->prom_mapping);
+    return 1;
+}
+
+/* Put on the bus what the registers name: nothing, or the window, showing
+   the page ROM Control picks of a paged part. Code runs from the image in
+   place where the window is one stretch of it. */
+static void
+el3_prom_show(el3_t *dev)
+{
+    if (dev->prom == NULL)
+        return;
+
+    if (dev->prom_window == 0) {
+        if (dev->prom_mapping.enable) {
+            mem_mapping_disable(&dev->prom_mapping);
+            el3_log("3C509B: boot PROM window closed\n");
+        }
+        return;
+    }
+
+    mem_mapping_set_exec(&dev->prom_mapping, (dev->prom_window <= (dev->prom_mask + 1)) ?
+                                                 (dev->prom + ((el3_prom_page(dev) << 14) & dev->prom_mask)) :
+                                                 NULL);
+    if (!dev->prom_mapping.enable || (dev->prom_mapping.base != dev->prom_base) ||
+        (dev->prom_mapping.size != dev->prom_window)) {
+        mem_mapping_set_addr(&dev->prom_mapping, dev->prom_base, dev->prom_window);
+        el3_log("3C509B: %u KB boot PROM, %u KB window at %05x\n", dev->prom_part >> 10, dev->prom_window >> 10,
+                dev->prom_base);
+    }
+}
+
+/* The part and window a ROM field names, the ISA card's way or the 3C529's,
+   put on the bus. A window smaller than the part shows its start, as on the
+   adapter: a BootWare that needs more of itself is configured wrong there
+   too. */
+static void
+el3_prom_place(el3_t *dev, uint8_t field)
+{
+    if (dev->mca)
+        el3_mca_rom_window(field, &dev->prom_base, &dev->prom_window, &dev->prom_part, &dev->prom_paged);
+    else
+        el3_rom_window(field, &dev->prom_base, &dev->prom_window, &dev->prom_part, &dev->prom_paged);
+    if ((dev->prom_window != 0) && !el3_prom_load(dev))
+        dev->prom_window = 0;
+
+    el3_prom_show(dev);
+}
+
+/* The ISA card's boot PROM: fitted when the EEPROM's word 08h names one --
+   Plug and Play and window 0 move the window, not the part -- and shown
+   where Address Configuration's ROM SIZE and ROM BASE say (7-16). */
+static void
+el3_isa_prom_update(el3_t *dev)
+{
+    el3_prom_place(dev, (dev->eeprom[0x08] & AC_ROM) ? (uint8_t) ((dev->address_config & AC_ROM) >> 8) : 0);
+}
+
 static void *
 el3_init(const device_t *info)
 {
     el3_t   *dev = (el3_t *) calloc(1, sizeof(el3_t));
-    uint16_t base;
-    uint8_t  irq;
     int      mac;
 
     if (info->flags & DEVICE_MCA) {
@@ -2272,15 +2695,13 @@ el3_init(const device_t *info)
         dev->board       = (uint8_t) info->local;
         dev->mca         = 1;
         dev->pnp         = 0;
-        irq              = 0;
-        base             = 0x200;
         dev->pos_regs[0] = (uint8_t) id;
         dev->pos_regs[1] = (uint8_t) (id >> 8);
     } else {
         dev->board = (uint8_t) device_get_config_int("board");
-        dev->pnp   = (uint8_t) device_get_config_int("pnp");
-        irq        = (uint8_t) device_get_config_int("irq");
-        base       = (uint16_t) device_get_config_hex16("base");
+        /* Plug and Play is on as the card ships; 3C5X9CFG can turn it off in
+           the EEPROM, so the stamp says nothing about it (7-23). */
+        dev->pnp   = 1;
     }
 
     dev->mac[0] = 0x00;
@@ -2299,27 +2720,27 @@ el3_init(const device_t *info)
         dev->mac[5] = mac & 0xff;
     }
 
-    dev->nvr_stamp[0] = (uint8_t) base;
-    dev->nvr_stamp[1] = (uint8_t) (base >> 8);
-    dev->nvr_stamp[2] = irq;
-    dev->nvr_stamp[3] = dev->board;
-    memcpy(&dev->nvr_stamp[4], &dev->mac[3], 3);
-    dev->nvr_stamp[7] = dev->pnp;
-    dev->nvr_stamp[8] = 2; /* file format */
     snprintf(dev->nvr_name, sizeof(dev->nvr_name), "eeprom_%s_%d.nvr", info->internal_name, device_get_instance());
 
     if (!el3_eeprom_restore(dev)) {
-        el3_eeprom_build(dev, base, irq);
+        /* What a card ships with, as 3Com documents it for the 3C509B-TP: I/O
+           base 300h, IRQ 10, Plug and Play enabled and no boot PROM - the last
+           is why word 08h's ROM field is left alone. */
+        el3_eeprom_build(dev, 0x300, 10);
         el3_eeprom_save(dev);
+    }
+    /* The Plug and Play card before the power-up reset, which loads its
+       registers with the EEPROM's configuration as every reset does. */
+    if (!dev->mca) {
+        el3_pnp_load_rom(dev);
+        dev->pnp_card = isapnp_add_card(dev->pnp_rom, sizeof(dev->pnp_rom), el3_pnp_config_changed, NULL, NULL, NULL, dev);
+        isapnp_set_device_defaults(dev->pnp_card, 0, &dev->pnp_power_up);
     }
     el3_global_reset(dev, 0);
 
     if (dev->mca) {
         mca_add(el3_mca_read, el3_mca_write, el3_mca_feedb, NULL, dev);
     } else {
-        el3_pnp_load_rom(dev);
-        dev->pnp_card = isapnp_add_card(dev->pnp_rom, sizeof(dev->pnp_rom), el3_pnp_config_changed, NULL, NULL, NULL, dev);
-        el3_pnp_update(dev);
         io_sethandler(0x279, 1, NULL, NULL, NULL, el3_pnp_addr_write, NULL, NULL, dev);
 
         /* The ID port can be any 01x0h port the host picks. */
@@ -2332,7 +2753,8 @@ el3_init(const device_t *info)
     if (dev->card->link_state & NET_LINK_DOWN)
         dev->link_up = 0;
 
-    el3_log("3C509B: %s, EEPROM base %03x IRQ %i, %02x:%02x:%02x:%02x:%02x:%02x\n", info->name, base, irq,
+    el3_log("3C509B: %s, EEPROM base %03x IRQ %i, %02x:%02x:%02x:%02x:%02x:%02x\n", info->name,
+            (0x200 + ((dev->eeprom[0x08] & AC_IO_BASE) << 4)), (dev->eeprom[0x09] >> 12),
             dev->mac[0], dev->mac[1], dev->mac[2], dev->mac[3], dev->mac[4], dev->mac[5]);
 
     return dev;
@@ -2353,6 +2775,10 @@ el3_close(void *priv)
     }
     if (dev->irq_line)
         picintc(1 << dev->irq);
+    if (dev->prom != NULL) {
+        mem_mapping_disable(&dev->prom_mapping);
+        free(dev->prom);
+    }
     netcard_close(dev->card);
     free(dev);
 }
@@ -2368,76 +2794,12 @@ static const device_config_t el3_isa_config[] = {
         .file_filter    = NULL,
         .spinner        = { 0 },
         .selection      = {
-            { .description = "3C509B-TPO (10BASE-T)",               .value = BOARD_TPO   },
-            { .description = "3C509B-TP (10BASE-T, AUI)",           .value = BOARD_TP    },
-            { .description = "3C509B-COMBO (10BASE-T, BNC, AUI)",   .value = BOARD_COMBO },
             { .description = "3C509B (BNC, AUI)",                   .value = BOARD_BNC   },
+            { .description = "3C509B-TPO (10BASE-T)",               .value = BOARD_TPO   },
+            { .description = "3C509B-TP (10BASE-T, AUI)",           .value = BOARD_TPAUI },
+         // { .description = "3C509B-TPC (10BASE-T, Coaxial)",      .value = BOARD_TPC   }, TODO: to implement its coaxial (wireless?) version
+            { .description = "3C509B-COMBO (10BASE-T, BNC, AUI)",   .value = BOARD_COMBO },
             { .description = ""                                                          }
-        },
-        .bios           = { { 0 } }
-    },
-    {
-        .name           = "pnp",
-        .description    = "Plug and Play",
-        .type           = CONFIG_BINARY,
-        .default_string = NULL,
-        .default_int    = 1,
-        .file_filter    = NULL,
-        .spinner        = { 0 },
-        .selection      = { { 0 } },
-        .bios           = { { 0 } }
-    },
-    {
-        .name           = "base",
-        .description    = "Address",
-        .type           = CONFIG_HEX16,
-        .default_string = NULL,
-        .default_int    = 0x300,
-        .file_filter    = NULL,
-        .spinner        = { 0 },
-        .selection      = {
-            { .description = "0x200", .value = 0x200 },
-            { .description = "0x210", .value = 0x210 },
-            { .description = "0x220", .value = 0x220 },
-            { .description = "0x240", .value = 0x240 },
-            { .description = "0x250", .value = 0x250 },
-            { .description = "0x280", .value = 0x280 },
-            { .description = "0x2a0", .value = 0x2a0 },
-            { .description = "0x2c0", .value = 0x2c0 },
-            { .description = "0x2e0", .value = 0x2e0 },
-            { .description = "0x300", .value = 0x300 },
-            { .description = "0x310", .value = 0x310 },
-            { .description = "0x320", .value = 0x320 },
-            { .description = "0x330", .value = 0x330 },
-            { .description = "0x340", .value = 0x340 },
-            { .description = "0x350", .value = 0x350 },
-            { .description = "0x360", .value = 0x360 },
-            { .description = "0x380", .value = 0x380 },
-            { .description = "0x3a0", .value = 0x3a0 },
-            { .description = "0x3c0", .value = 0x3c0 },
-            { .description = "0x3e0", .value = 0x3e0 },
-            { .description = ""                      }
-        },
-        .bios           = { { 0 } }
-    },
-    {
-        .name           = "irq",
-        .description    = "IRQ",
-        .type           = CONFIG_SELECTION,
-        .default_string = NULL,
-        .default_int    = 3,
-        .file_filter    = NULL,
-        .spinner        = { 0 },
-        .selection      = {
-            { .description = "IRQ 3",  .value =  3 },
-            { .description = "IRQ 5",  .value =  5 },
-            { .description = "IRQ 7",  .value =  7 },
-            { .description = "IRQ 9",  .value =  9 },
-            { .description = "IRQ 10", .value = 10 },
-            { .description = "IRQ 11", .value = 11 },
-            { .description = "IRQ 12", .value = 12 },
-            { .description = "IRQ 15", .value = 15 },
-            { .description = ""                    }
         },
         .bios           = { { 0 } }
     },
@@ -2474,7 +2836,7 @@ static const device_config_t el3_mca_config[] = {
 const device_t threec509b_device = {
     .name          = "3Com EtherLink III ISA (3C509B)",
     .internal_name = "3c509b",
-    .flags         = DEVICE_ISA,
+    .flags         = DEVICE_ISA, /* "The 3C509B ... support[s] 8-bit accesses" (10-5) */
     .local         = 0,
     .init          = el3_init,
     .close         = el3_close,
