@@ -388,6 +388,9 @@ extern const device_t mach64vt2_device;
 extern const device_t mach64gtb_device;
 extern const device_t mach64gtb_onboard_device;
 extern const device_t mach64vt3_onboard_device;
+extern const device_t ati_rage128_pro_device;
+extern const device_t ati_xpert128_pci_device;
+extern const device_t ati_rage128_maxx_device;
 
 /* ATi 18800 */
 extern const device_t ati18800_wonder_device;
@@ -552,7 +555,6 @@ extern void           paradise_wd90c20_vga_enable(void *priv, uint16_t port);
 extern const device_t paradise_wd90c30_device;
 extern const device_t paradise_wd90c31_device;
 extern const device_t paradise_wd90c31_onboard_device;
-extern const device_t paradise_speedstar24x_device;
 
 /* Quadram Quadcolor I / I + II */
 extern const device_t quadcolor_device;
@@ -607,6 +609,9 @@ extern const device_t s3_trio3d2x_agp_device;
 
 /* Sigma Color 400 */
 extern const device_t sigma_device;
+
+/* SiS */
+extern const device_t sis6306_onboard_device;
 
 /* Trident TGUI 94x0 */
 extern const device_t tgui9400cxi_device;
