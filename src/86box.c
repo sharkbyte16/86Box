@@ -94,6 +94,7 @@
 #include <86box/thread.h>
 #include <86box/network.h>
 #include <86box/sound.h>
+#include <86box/usb.h>
 #include <86box/midi.h>
 #include <86box/video.h>
 #include <86box/ui.h>
@@ -206,6 +207,8 @@ int      fpu_type                               = 0;              /* (C) fpu typ
 int      fpu_softfloat                          = 0;              /* (C) fpu uses softfloat */
 int      time_sync                              = 0;              /* (C) enable time sync */
 int      time_offset_years                      = 0;              /* (C) year offset for time sync */
+int      time_fixed_year                        = 0;              /* (C) fixed year for time sync (0 = none) */
+int      time_keep_date                         = 0;              /* (C) time sync keeps the guest's own date */
 int      confirm_reset                          = 1;              /* (G) enable reset confirmation */
 int      confirm_exit                           = 1;              /* (G) enable exit confirmation */
 int      confirm_save                           = 1;              /* (G) enable save confirmation */
@@ -228,8 +231,12 @@ int      jumpered_internal_ecp_dma              = 0;              /* (C) Jumpere
 int      inhibit_multimedia_keys;                                 /* (G) Inhibit multimedia keys on Windows. */
 int      force_10ms;                                              /* (C) Force 10ms CPU frame intervals. */
 int      vmm_disabled                           = 0;              /* (G) disable built-in manager */
-int      discord_presence                       = 0;              /* (G) Discord status: off, name and hardware, hardware only, no details */
+int      vmm_discord_presence                   = 0;              /* (G) Discord status: off, name and hardware, hardware only, no details */
 char     vmm_path_cfg[1024]                     = { '\0' };       /* (G) VMs path (unless -E is used)*/
+int      vmm_update_check                       = 1;              /* (G) check for updates when the manager starts */
+int      vmm_regex_search                       = 0;              /* (G) search the manager with regular expressions */
+int      vmm_window_remember                    = 0;              /* (G) remember the manager's window size and position */
+int      vmm_delete_to_trash                    = 0;              /* (G) delete machines to the trash */
 
 int      other_ide_present = 0;                                   /* IDE controllers from non-IDE cards are
                                                                      present */
@@ -1507,9 +1514,6 @@ usage:
         if (!config_load())
             return 0;
 
-        /* To save the global key binds. */
-        config_save_global();
-
         /*
            Clear the CMOS and/or BIOS flash file, if we were started with
            the relevant parameter(s).
@@ -1678,6 +1682,19 @@ pc_init_modules(void)
             snprintf(temp, sizeof_w(temp), plat_get_string(STRING_HW_NOT_AVAILABLE_DEVICE), tempc);
             ui_msgbox_header(MBX_WARNING, plat_get_string(STRING_HW_NOT_AVAILABLE_TITLE), temp);
             gfxcard[i] = 0;
+        }
+    }
+
+    /* A card that cannot drive a second monitor must not be initialised in a secondary
+       slot, even when an older configuration file still names one. */
+    for (uint8_t i = 1; i < GFXCARD_MAX; i++) {
+        if ((gfxcard[i] == VID_NONE) || (gfxcard[i] == VID_INTERNAL) || (gfxcard[i] == VID_EXTERNAL))
+            continue;
+        if (!video_card_is_secondary(machine, gfxcard[0], gfxcard[i])) {
+            memset(tempc, 0, sizeof(tempc));
+            device_get_name(video_card_getdevice(gfxcard[i]), 0, tempc);
+            pclog("Video card #%i \"%s\" cannot drive a secondary display, disabling it.\n", i + 1, tempc);
+            gfxcard[i] = VID_NONE;
         }
     }
 
@@ -1962,6 +1979,11 @@ pc_reset_hard_init(void)
      * that will be a call to device_reset_all() later !
      */
 
+    /* The PCI USB card, then the USB hub, so that both exist before any
+       other USB device attaches. */
+    usb_card_reset();
+    usb_hub_reset();
+
     /* Reset and reconfigure the Sound Card layer. */
     sound_card_reset();
 
@@ -1986,6 +2008,11 @@ pc_reset_hard_init(void)
      */
     mouse_reset();
 
+    /* The USB keyboard goes on here, after the USB controller exists;
+       keyboard_add_device() skips it. */
+    if (keyboard_type == KEYBOARD_TYPE_USB)
+        device_add(&keyboard_usb_device);
+
     /* Reset the Hard Disk Controller module. */
     hdc_reset();
 
@@ -1998,6 +2025,7 @@ pc_reset_hard_init(void)
 
     /* Reset and reconfigure the SCSI layer. */
     scsi_card_init();
+    usb_msd_hard_reset();
 
     scsi_disk_hard_reset();
 
@@ -2195,6 +2223,11 @@ pc_run(void)
         pc_reset_hard_close();
         pc_reset_hard_init();
     }
+
+    /* USB devices the user plugged in or unplugged since the last block. It
+       runs here, between blocks and outside the blit lock, because a device
+       that finds no free port is named in a message box. */
+    usb_hotplug_process();
 
     /* Update the guest-CPU independent timer for devices with independent clock speed */
     rivatimer_update_all();

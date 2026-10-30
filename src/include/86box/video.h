@@ -79,14 +79,12 @@ typedef enum video_font_format_e
 
 #define VIDEO_FLAG_TYPE_CGA     0
 #define VIDEO_FLAG_TYPE_MDA     1
-#define VIDEO_FLAG_TYPE_SPECIAL 2
-#define VIDEO_FLAG_TYPE_8514    3
+#define VIDEO_FLAG_TYPE_SEC     2
+#define VIDEO_FLAG_TYPE_DA2     3
 #define VIDEO_FLAG_TYPE_XGA     4
-#define VIDEO_FLAG_TYPE_DA2     5
+#define VIDEO_FLAG_TYPE_8514    5
 #define VIDEO_FLAG_TYPE_NONE    6
-#define VIDEO_FLAG_TYPE_MASK    7
-
-#define VIDEO_FLAG_TYPE_SECONDARY VIDEO_FLAG_TYPE_SPECIAL
+#define VIDEO_FLAG_TYPE_SPECIAL 7
 
 #define FONT_IBM_MDA_437_PATH        "roms/video/mda/mda.rom"
 #define FONT_IBM_MDA_437_NORDIC_PATH "roms/video/mda/4733197.bin"
@@ -292,6 +290,7 @@ extern int         video_is_mda(void);
 extern int         video_is_cga(void);
 extern int         video_card_get_flags(int card);
 extern int         video_get_primary_flags(int m, int card);
+extern int         video_card_is_secondary(int m, int primary_card, int secondary_card);
 /* Query the active video implementation before a memory transfer so
  * pin-level CPU cores can model READY without hardcoding a card. */
 extern unsigned    video_get_wait_states(uint32_t address, int write,
@@ -330,6 +329,8 @@ extern void    video_pre_reset(int card);
 extern void    video_reset(int card);
 extern void    video_post_reset(void);
 extern void    video_voodoo_init(void);
+extern void    video_set_override_handler(void *priv, void (*set_override)(void *priv, int val));
+extern int     video_set_override(int val);
 extern uint8_t video_force_resize_get_monitor(int monitor_index);
 extern void    video_force_resize_set_monitor(uint8_t res, int monitor_index);
 extern void    video_update_timing(void);
@@ -415,6 +416,9 @@ extern const device_t bochs_svga_device;
 /* Chips & Technologies */
 extern const device_t chips_69000_device;
 extern const device_t chips_69000_onboard_device;
+extern const device_t chips_82c450_device;
+extern const device_t chips_82c451_device;
+extern const device_t chips_82c452_device;
 
 /* Cirrus Logic GD54xx */
 extern const device_t gd5401_isa_device;
@@ -557,6 +561,9 @@ extern void           paradise_wd90c20_vga_enable(void *priv, uint16_t port);
 extern const device_t paradise_wd90c30_device;
 extern const device_t paradise_wd90c31_device;
 extern const device_t paradise_wd90c31_onboard_device;
+extern const device_t paradise_wd90c33_device;
+extern const device_t paradise_wd90c33_vlb_device;
+extern const device_t paradise_wd90c33_onboard_device;
 
 /* Quadram Quadcolor I / I + II */
 extern const device_t quadcolor_device;
@@ -623,6 +630,11 @@ extern const device_t tgui9440_onboard_pci_device;
 extern const device_t tgui9660_pci_device;
 extern const device_t tgui9660_onboard_pci_device;
 extern const device_t tgui9680_pci_device;
+
+/* Weitek Power 9100 */
+extern const device_t p9100_viper_se_vlb_device; /* Not yet ready */
+extern const device_t p9100_viper_se_pci_device;
+extern const device_t p9100_papilio_pci_device;
 
 /* IBM PS/1 (S)VGA */
 extern const device_t ibm_ps1_2121_device;

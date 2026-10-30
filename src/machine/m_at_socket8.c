@@ -246,18 +246,7 @@ machine_at_p6rp4_init(const machine_t *model)
     pci_register_slot(0x05, PCI_CARD_NORMAL,          3, 4, 1, 2);
     pci_register_slot(0x04, PCI_CARD_NORMAL,          4, 1, 2, 3);
 
-    device_add(&i450kx_device); /* 450GX is a superset of the 450KX */
-    {
-        static const ioapic_legacy_irq_routing_t p6rp4_irq_routing = {
-            .irq_to_intin = IOAPIC_LEGACY_IRQ_ROUTE_ISA
-        };
-        /* An AMI BIOS (AMIBIOS 0106 for SMC): its last POST code before
-           booting is 00h (IOAPIC_POST_TRIGGER_AMI). */
-        void *ioapic = device_add_params(&ioapic_validated_up_device,
-                                         (void *) (IOAPIC_TOPOLOGY_UP_APIC_DEFAULT | IOAPIC_POST_TRIGGER_AMI));
-
-        ioapic_set_legacy_irq_routing(ioapic, &p6rp4_irq_routing);
-    }
+    device_add(&i450gx_device);
     device_add(&sio_zb_device);
     device_add(machine_get_ide_device(machine));
     /* Input port bit 2 must be 1 or CMOS Setup is disabled. */
@@ -346,7 +335,7 @@ machine_at_ficpo6000_init(const machine_t *model)
     pci_register_slot(0x06, PCI_CARD_NORMAL,          4, 1, 2, 3);
     pci_register_slot(0x0c, PCI_CARD_IDE,             0, 0, 0, 0);
 
-    device_add(&i450kx_device);
+    device_add(&i450gx_device);
     device_add(&sio_zb_device);
     device_add(machine_get_ide_device(machine));
     /* Input port bit 2 must be 1 or CMOS Setup is disabled. */
@@ -499,7 +488,7 @@ machine_at_ap440fx_init(const machine_t *model)
 
     device_add(&i440fx_device);
     device_add(&piix3_device);
-    device_add_params(&pc87307_device, (void *) (PCX730X_AMI | PCX7307_PC87307));
+    device_add_params(&pc87307_device, (void *) (PCX730X_AMI | PCX7307_PC87307 | PCX7307_RTC));
     device_add(&intel_flash_bxt_ami_device);
 
     if (sound_card_current[0] == SOUND_INTERNAL)
@@ -649,7 +638,7 @@ machine_at_vs440fx_init(const machine_t *model)
 
     device_add(&i440fx_device);
     device_add(&piix3_device);
-    device_add_params(&pc87307_device, (void *) (PCX730X_AMI | PCX7307_PC87307));
+    device_add_params(&pc87307_device, (void *) (PCX730X_AMI | PCX7307_PC87307 | PCX7307_RTC));
 
     device_add(&intel_flash_bxt_ami_device);
 

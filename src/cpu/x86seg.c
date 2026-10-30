@@ -727,6 +727,11 @@ loadcsjmp(uint16_t seg, uint32_t old_pc)
             return;
         x86seg_log("%04X %04X %04X %04X\n", segdat[0], segdat[1], segdat[2], segdat[3]);
         if (segdat[2] & 0x1000) {
+            /* Reject data segments before loading CS. */
+            if (!(segdat[2] & 0x0800)) {
+                x86gpf("loadcsjmp(): Target is not executable", seg & 0xfffc);
+                return;
+            }
             /* Normal code segment */
             if (!(segdat[2] & 0x0400)) {
                 /* Not conforming */
@@ -1039,6 +1044,11 @@ loadcscall(uint16_t seg, uint32_t old_pc)
 
         x86seg_log("Code seg call - %04X - %04X %04X %04X\n", seg, segdat[0], segdat[1], segdat[2]);
         if (segdat[2] & 0x1000) {
+            /* Reject data segments before pushing the return address. */
+            if (!(segdat[2] & 0x0800)) {
+                x86gpf("loadcscall(): Target is not executable", seg & 0xfffc);
+                return;
+            }
             if (!(segdat[2] & 0x0400)) { /* Not conforming */
                 if ((seg & 0x0003) > CPL) {
                     x86gpf("loadcscall(): Non-conforming RPL > CPL", seg & 0xfffc);
@@ -1449,12 +1459,6 @@ pmoderetf(int is32, uint16_t off)
     if (CPL == (seg & 0x0003)) {
         x86seg_log("RETF CPL = RPL  %04X\n", segdat[2]);
         switch (segdat[2] & 0x1f00) {
-            case 0x1000:
-            case 0x1100:
-            case 0x1200:
-            case 0x1300:
-                 /* Data segment, apparently valid when CPL is the same, used by MS LINK for DOS. */
-                 fallthrough;
             case 0x1800:
             case 0x1900:
             case 0x1a00:
@@ -1504,12 +1508,6 @@ pmoderetf(int is32, uint16_t off)
         cycles -= timing_retf_pm;
     } else {
         switch (segdat[2] & 0x1f00) {
-            case 0x1000:
-            case 0x1100:
-            case 0x1200:
-            case 0x1300:
-                 /* Data segment, apparently valid when CPL is the same, used by MS LINK for DOS. */
-                 fallthrough;
             case 0x1800:
             case 0x1900:
             case 0x1a00:
@@ -2045,8 +2043,10 @@ pmodeiret(int is32)
 
     if (cpu_state.flags & NT_FLAG) {
         /* The back link must name a global, busy, present TSS: #TS(back
-           link) on the 80286, 386, Intel486 and Pentium books, #GP on the
-           P6 book; #NP(back link) when not present */
+           link), or #NP(back link) when not present. The P6-era manual's
+           #GP here is a documentation error, corrected to #TS by the IA-32
+           SDM Documentation Changes (252046-001, item 3); Win4Lin's monitor
+           runs the Windows VMM with NT set and relies on that #TS. */
         cpl_override = 1;
         seg  = readmemw(tr.base, 0);
         cpl_override = 0;
@@ -2054,20 +2054,14 @@ pmodeiret(int is32)
             return;
         addr = seg & 0xfff8;
         if ((seg & 0x0004) || ((addr + 7) > gdt.limit)) {
-            if (is_p6)
-                x86gpf("pmodeiret(): back link local or past the GDT limit", seg & 0xfffc);
-            else
-                x86ts("pmodeiret(): back link local or past the GDT limit", seg & 0xfffc);
+            x86ts("pmodeiret(): back link local or past the GDT limit", seg & 0xfffc);
             return;
         }
         read_descriptor(gdt.base + addr, segdat, segdat32, 1);
         if (cpu_state.abrt)
             return;
         if (((segdat[2] & 0x1f00) != 0x0300) && (!is386 || ((segdat[2] & 0x1f00) != 0x0b00))) {
-            if (is_p6)
-                x86gpf("pmodeiret(): back link not a busy TSS", seg & 0xfffc);
-            else
-                x86ts("pmodeiret(): back link not a busy TSS", seg & 0xfffc);
+            x86ts("pmodeiret(): back link not a busy TSS", seg & 0xfffc);
             return;
         }
         if (!(segdat[2] & 0x8000)) {

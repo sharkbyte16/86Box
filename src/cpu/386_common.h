@@ -542,9 +542,12 @@ fastreadl_fetch(uint32_t a)
 static __inline int
 ea_outside_limit(uint32_t n)
 {
-    const x86seg *s = cpu_state.ea_seg;
+    const x86seg  *s    = cpu_state.ea_seg;
+    /* 64-bit so that an operand ending at or past 0xffffffff is correctly
+       seen as out of range instead of silently wrapping to a low address. */
+    const uint64_t high = (uint64_t) cpu_state.eaaddr + n - 1;
 
-    if ((cpu_state.eaaddr >= s->limit_low) && ((cpu_state.eaaddr + n - 1) <= s->limit_high))
+    if ((cpu_state.eaaddr >= s->limit_low) && (high <= s->limit_high))
         return 0;
     SEG_LIMIT_FAULT(s);
     return 1;
@@ -899,12 +902,14 @@ cpu_cr0_invalid(uint32_t value)
 
     /* On the 6x86 family, NW means Not Write-Back: NW=1 selects
        write-through caching even with CD=0 (94175 and 94329, table 2-4).
-       The 5x86 instead uses NW=1 for write-back (94246, table 5-1).
+       The 5x86 instead uses NW=1 for write-back (94246, table 5-1), and so
+       does the MediaGX (MediaGX MMX data book, Table 3-7).
        Intel's invalid CD/NW combination must not reject either mode. */
     if ((cpu_s->cpu_type == CPU_Cx5x86) ||
         (cpu_s->cpu_type == CPU_Cx6x86) ||
         (cpu_s->cpu_type == CPU_Cx6x86L) ||
-        (cpu_s->cpu_type == CPU_Cx6x86MX))
+        (cpu_s->cpu_type == CPU_Cx6x86MX) ||
+        (cpu_s->cpu_type == CPU_CxGX1))
         return 0;
 
     return (cpu_s->cpu_type >= CPU_i486SX) &&

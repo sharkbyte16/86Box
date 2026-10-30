@@ -140,6 +140,7 @@ typedef struct cd_image_t {
     int           has_data;
     int           has_dstruct;
     int           data_tracks_scrambled;
+    uint8_t       mcn[14];
     int32_t       tracks_num;
     uint32_t      bad_sectors_num;
     track_t      *tracks;
@@ -2672,7 +2673,17 @@ image_load_cue_fp(cd_image_t *img, const char *cuefile, FILE *fp)
                     }
                 }
             }
-        } else if (!strcmp(command, "CATALOG") || !strcmp(command, "CDTEXTFILE") ||
+        } else if (!strcmp(command, "CATALOG")) {
+            char catalog[MAX_LINE_LENGTH];
+
+            success = image_cue_get_buffer(catalog, &line, 0);
+            if (!success || (strlen(catalog) != 13) ||
+                (strspn(catalog, "0123456789") != 13)) {
+                success = 0;
+                break;
+            }
+            memcpy(img->mcn, catalog, 14);
+        } else if (!strcmp(command, "CDTEXTFILE") ||
                    !strcmp(command, "ISRC") || !strcmp(command, "PERFORMER") ||
                    !strcmp(command, "SONGWRITER") || !strcmp(command, "TITLE") ||
                    !strcmp(command, "COMPOSER") || !strcmp(command, "")) {
@@ -3960,6 +3971,19 @@ image_close(void *local)
     }
 }
 
+static int
+image_get_mcn(const void *local, uint8_t *mcn)
+{
+    const cd_image_t *img = (const cd_image_t *) local;
+
+    /* An all-zero MCN means that no catalog number was supplied. */
+    if (!img->mcn[0] || (strspn((const char *) img->mcn, "0") == 13))
+        return 0;
+
+    memcpy(mcn, img->mcn, 13);
+    return 1;
+}
+
 static const cdrom_ops_t image_ops = {
     image_get_track_info,
     image_get_raw_track_info,
@@ -3972,7 +3996,8 @@ static const cdrom_ops_t image_ops = {
     image_has_data,
     NULL,
     image_close,
-    NULL
+    NULL,
+    image_get_mcn
 };
 
 /* Public functions. */
@@ -4052,8 +4077,15 @@ image_open(cdrom_t *dev, const char *path)
 
         if (ret > 0) {
             if (img->is_dvd == 2) {
-                uint32_t lb = image_get_last_block(img); /* Should be safer than previous way of doing it? */
-                img->is_dvd = (lb >= 524287);    /* Minimum 1 GB total capacity as threshold for DVD. */
+                uint32_t lb = image_get_last_block(img);
+                if (lb < CD_MAX_SECTORS) img->is_dvd = 0;
+                else if (lb < DVD_MAX_SECTORS) img->is_dvd = 1;
+                else {
+                    if (cdrom_drive_types[dev->type].hd_type == 1)
+                        img->is_dvd = 2;
+                    else
+                        img->is_dvd = 3;   /* Blu-ray */
+                }
             }
 
             dev->ops = &image_ops;

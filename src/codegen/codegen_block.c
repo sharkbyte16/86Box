@@ -6,6 +6,7 @@
 #include "cpu.h"
 #include <86box/mem.h>
 #include <86box/plat_unused.h>
+#include <86box/timer.h>
 
 #include "x86.h"
 #include "x86_flags.h"
@@ -660,6 +661,13 @@ remove_from_block_list(codeblock_t *block, UNUSED(uint32_t pc))
     }
 }
 
+/*Strike threshold, base cooldown length (in tsc counts), and cap on the
+  exponential backoff applied per consecutive strike, for the SMC-thrash
+  interpret fallback (see page_t).*/
+#define SMC_THRASH_STRIKE_THRESHOLD 3
+#define SMC_THRASH_BASE_COOLDOWN    4096
+#define SMC_THRASH_MAX_STRIKES      8
+
 static void
 invalidate_block(codeblock_t *block)
 {
@@ -671,6 +679,21 @@ invalidate_block(codeblock_t *block)
     if (!block->valid)
         fatal("Invalidating deleted block\n");
 #endif
+    /* A block that compiled, then got rewritten before it ran often enough
+       from block->data to make up for compiling it, cost more than
+       interpreting it would have: count it as a strike against the block.
+       One that ran often enough paid for itself, so it clears the block's
+       strikes instead. One that was only marked, never compiled, cost
+       nothing extra and tells neither. */
+    if (block->flags & CODEBLOCK_WAS_RECOMPILED) {
+        if (block->runs_left) {
+            if (block->smc_strikes < SMC_THRASH_MAX_STRIKES)
+                block->smc_strikes++;
+            if (block->smc_strikes >= SMC_THRASH_STRIKE_THRESHOLD)
+                block->smc_cooldown_until = tsc + ((uint64_t) SMC_THRASH_BASE_COOLDOWN << (block->smc_strikes - SMC_THRASH_STRIKE_THRESHOLD));
+        } else
+            block->smc_strikes = 0;
+    }
     remove_from_block_list(block, old_pc);
     block_dirty_list_add(block);
     if (block->head_mem_block) {
@@ -831,7 +854,8 @@ codegen_check_flush(page_t *page, UNUSED(uint64_t mask), UNUSED(uint32_t phys_ad
     page->code_present_mask &= ~page->dirty_mask;
     page->dirty_mask = 0;
 
-    for (uint8_t c = 0; c < 64; c++) {
+    /* A page with no RAM behind it has no byte masks of its own */
+    for (uint8_t c = 0; (c < 64) && (page->mem != page_ff); c++) {
         if (page->byte_code_present_mask[c] & page->byte_dirty_mask[c])
             remove_from_evict_list = 0;
         page->byte_code_present_mask[c] &= ~page->byte_dirty_mask[c];
@@ -859,9 +883,11 @@ codegen_block_init(uint32_t phys_addr)
     block_num                 = HASH(phys_addr);
     codeblock_hash[block_num] = block_current;
 
-    block->valid       = 1;
-    block->ins         = 0;
-    block->pc          = cs + cpu_state.pc;
+    block->valid             = 1;
+    block->ins               = 0;
+    block->smc_strikes        = 0;
+    block->smc_cooldown_until = 0;
+    block->pc                = cs + cpu_state.pc;
     block->_cs         = cs;
     block->phys        = phys_addr;
     block->dirty_mask  = &page->dirty_mask;
@@ -930,6 +956,7 @@ codegen_block_start_recompile(codeblock_t *block)
        bits would leave every later non-flat visit a new block. */
     block->status = (cpu_cur_status & ~CPU_STATUS_MASK) | (block->status & CPU_STATUS_MASK);
     block->used   = 1; /* new: not the next thing the eviction sweep takes */
+    block->runs_left = SMC_THRASH_RUN_MASK; /* not yet run from block->data */
 
     block->page_mask = block->page_mask2 = 0;
     block->ins                           = 0;
@@ -1249,6 +1276,10 @@ codegen_block_restore_version(codeblock_t *block)
         block->dirty_mask     = &page->byte_dirty_mask[(block->phys >> PAGE_BYTE_MASK_SHIFT) & PAGE_BYTE_MASK_OFFSET_MASK];
         block->dirty_mask2    = NULL;
         block->flags          = (block->flags & ~(CODEBLOCK_HAS_FPU | CODEBLOCK_STATIC_TOP)) | v->flags | CODEBLOCK_WAS_RECOMPILED;
+        /* Restoring a kept version is cheap (a few memcmp calls), unlike a
+           real recompile: do not let it count as an SMC-thrash strike if
+           it gets invalidated again before being run often from block->data. */
+        block->runs_left      = 0;
         codegen_block_generate_end_mask_recompile();
         add_to_block_list(block);
         block_version_owner_sync(block_nr);

@@ -26,6 +26,7 @@
 #        include <86box/nmi.h>
 #        include <86box/pic.h>
 #        include <86box/timer.h>
+#        include "x86_interrupt.h"
 #    endif
 
 #    if defined(__linux__) || defined(__APPLE__)
@@ -914,7 +915,8 @@ rx_epilogue(codeblock_t *block)
   In  - ECX (Windows) or EDI (System V) = source segment offset in cpu_state
         (bits 0-11), cycle limit (bits 12-23), cycles per element (bits 24-31)
   Out - EAX = 0 to carry on with the block, non-zero to leave it with
-        cpu_state.pc set back to the instruction
+        cpu_state.pc set back to the instruction, or left at the next one,
+        which the caller sets, after an SMI on the last element
   Preserves RBX, RBP and R12-R15; the caller saves RAX and RDX.
 
   Does what the interpreter's REP handlers in x86_ops_rep_dyn.h do: the same
@@ -937,10 +939,12 @@ build_rep_routine(codeblock_t *block, int is_stos, int shift, int a32, int (*ele
     int32_t *to_break[2];
     int32_t *to_abort;
     int32_t *to_set_pc;
+    int32_t *to_smi;
     int32_t *branch;
     int32_t *branch2;
     void    *loop;
     void    *done_ret;
+    void    *set_pc;
 
     /*RSP is 8 off 16-byte alignment on entry; five pushes and the 32-byte
       home area align it for the call to elem_func*/
@@ -1149,6 +1153,11 @@ build_rep_routine(codeblock_t *block, int is_stos, int shift, int a32, int (*ele
     rx_step_offset(block, RX_DST, RX_STEP, a32);
     rx_alu_ri(block, 0, 5, RX_CNT, 1);
     rx_rr(block, 0, 0, 0x29, RX_ELEMCYC, RX_CYCLES);
+    /*An element that raised an SMI (a trapped write) ends the instruction,
+      as the interpreter's loop does. Only these elements can: the runs copy
+      RAM through direct lookups, which nothing traps.*/
+    rx_testb_mi(block, REG_RBP, rx_state(&cpu_state._smi_line), 0xff);
+    to_smi = rx_jcc(block, RX_CC_NZ);
     rx_rr(block, 0, 0, 0x39, RX_END, RX_CYCLES);
     to_break[1] = rx_jcc(block, RX_CC_L);
     rx_patch(rx_jmp(block), loop);
@@ -1174,8 +1183,18 @@ build_rep_routine(codeblock_t *block, int is_stos, int shift, int a32, int (*ele
     rx_writeback(block, is_stos, a32);
 
     rx_patch(to_set_pc, rx_here());
+    set_pc = rx_here();
     rx_rm(block, 0, 0, 0x8b, REG_RCX, REG_RBP, rx_state(&cpu_state.oldpc));
     rx_rm(block, 0, 0, 0x89, REG_RCX, REG_RBP, rx_state(&cpu_state.pc));
+    rx_mov_ri(block, REG_RAX, 1);
+    rx_epilogue(block);
+
+    /*SMI: leave the block for it, restarting the instruction if elements are
+      left, otherwise after it, where the caller has set cpu_state.pc*/
+    rx_patch(to_smi, rx_here());
+    rx_writeback(block, is_stos, a32);
+    rx_rr(block, 0, 0, 0x85, RX_CNT, RX_CNT);
+    rx_patch(rx_jcc(block, RX_CC_NZ), set_pc);
     rx_mov_ri(block, REG_RAX, 1);
     rx_epilogue(block);
 
@@ -1230,6 +1249,7 @@ build_link_routine(codeblock_t *block)
     int32_t *nmi_set;
     int32_t *nmi_ok;
     int32_t *irq_ok;
+    int32_t *irq_ok_2;
     int32_t *es_flat;
     int32_t *uncached;
     int32_t *no_paging;
@@ -1264,7 +1284,11 @@ build_link_routine(codeblock_t *block)
     rx_rr(block, 0, 1, 0x85, REG_R15, REG_R15);
     miss[nr_miss++] = rx_jcc(block, RX_CC_Z);
 
-    /*Target not freed or changed since the slot was filled. RDI = it*/
+    /*Target not freed or changed since the slot was filled. RDI = it.
+      Whether codeblock_hash[] still points to it is not checked: if not, the
+      C loop would take another block compiled for the same cs:pc and status,
+      or find this one in the tree, and either runs the same code. A flush
+      that would keep the loop from looking changes link_gen.*/
     rx_rm(block, 0, 1, 0x8b, REG_RDI, REG_RBX, LINK_SLOT(block));
     rx_rm(block, 0, 0, 0x8b, REG_R9, REG_RDI, LINK_BLOCK(link_gen));
     rx_rm(block, 0, 0, 0x3b, REG_R9, REG_RBX, LINK_SLOT(gen));
@@ -1283,7 +1307,8 @@ build_link_routine(codeblock_t *block)
     lx_abs(block, 0, 0, 0x0b, REG_R9, &cpu_dr_armed);
     miss[nr_miss++] = rx_jcc(block, RX_CC_NZ);
 
-    /*nmi && nmi_enable && nmi_mask; the rest is out of line*/
+    /*NMI_TAKEABLE(): nmi && nmi_enable && (nmi_mask || (nmi & 2)); the
+      rest is out of line*/
     lx_abs(block, 0, 0, 0x8b, REG_R9, &nmi);
     rx_rr(block, 0, 0, 0x85, REG_R9, REG_R9);
     nmi_set  = rx_jcc(block, RX_CC_NZ);
@@ -1298,7 +1323,20 @@ build_link_routine(codeblock_t *block)
     lx_abs(block, 0, 0, 0x0fb6, REG_R9, &pic.int_pending);
     rx_rr(block, 0, 0, 0x85, REG_R9, REG_R9);
     miss[nr_miss++] = rx_jcc(block, RX_CC_NZ);
+    /*With the IOAPIC routing interrupts, x86_external_interrupt_pending()
+      also looks at local APIC 0: an ExtINT or anything in its IRR is a
+      miss, and the C loop works out whether it is deliverable*/
+    lx_abs(block, 0, 0, 0x0fb6, REG_R9, &ioapic_irq_path_active);
+    rx_rr(block, 0, 0, 0x85, REG_R9, REG_R9);
+    irq_ok_2 = rx_jcc(block, RX_CC_Z);
+    lx_abs(block, 0, 0, 0x0fb6, REG_R9, &cpu_lapic_extint_live[0]);
+    rx_rr(block, 0, 0, 0x85, REG_R9, REG_R9);
+    miss[nr_miss++] = rx_jcc(block, RX_CC_NZ);
+    lx_abs(block, 0, 0, 0x8b, REG_R9, &cpu_lapic_irr_live);
+    rx_test_ri(block, REG_R9, 1);
+    miss[nr_miss++] = rx_jcc(block, RX_CC_NZ);
     rx_patch(irq_ok, rx_here());
+    rx_patch(irq_ok_2, rx_here());
 
     /*Status and FPU rounding as when the slot was filled, compared as one
       word. Only the C loop refreshes the PC24 and RC_NZ status bits from
@@ -1367,12 +1405,7 @@ build_link_routine(codeblock_t *block)
     rx_rr(block, 0, 1, 0x85, REG_RDX, REG_RDX);
     miss[nr_miss++] = rx_jcc(block, RX_CC_Z);
 
-    /*The block lookup and the checks made before running it*/
-    rx_rm(block, 0, 1, 0x8b, REG_RDX, REG_RBX, LINK_SLOT(hash));
-    rx_rm(block, 0, 0, 0x8b, REG_RDX, REG_RDX, 0);
-    rx_rm(block, 0, 0, 0x8b, REG_RCX, REG_RBX, LINK_SLOT(block_nr));
-    rx_rr(block, 0, 0, 0x39, REG_RCX, REG_RDX); /*CMP EDX, ECX*/
-    miss[nr_miss++] = rx_jcc(block, RX_CC_NZ);
+    /*The checks made before running the block*/
     rx_rm(block, 0, 1, 0x8b, REG_RDX, REG_RBX, LINK_SLOT(dirty_mask));
     rx_rm(block, 0, 1, 0x8b, REG_RDX, REG_RDX, 0);
     rx_rm(block, 0, 1, 0x85, REG_RDX, REG_RBX, LINK_SLOT(page_mask));
@@ -1408,6 +1441,8 @@ build_link_routine(codeblock_t *block)
     lx_abs(block, 0, 0, 0x89, REG_RCX, &cpu_fetch_device);
     rx_rr(block, 0, 0, 0xff, 0, REG_RCX);                       /*INC ECX*/
     rx_rm(block, 0, 0, 0x88, REG_RCX, REG_RDI, LINK_BLOCK(used)); /*MOV block->used, CL*/
+    /*Linked entries bypass the dispatcher's SMC reuse countdown.*/
+    rx_rm(block, 0, 0, 0xd0, 5, REG_RDI, LINK_BLOCK(runs_left)); /*SHR byte, 1*/
     rx_bytes(block, jmp_r15, 3);
 
     /*Miss: the block's own epilogue, RAX still the slots*/
@@ -1431,7 +1466,8 @@ build_link_routine(codeblock_t *block)
     host_x86_POP(block, REG_RBX);
     host_x86_RET(block);
 
-    /*nmi set: miss only if nmi_enable and nmi_mask are too*/
+    /*nmi set: miss only if nmi_enable is too, and nmi_mask or an NMI from
+      the local APIC (nmi bit 1, which port 70h does not gate)*/
     rx_patch(nmi_set, rx_here());
     lx_abs(block, 0, 0, 0x8b, REG_R9, &nmi_enable);
     rx_rr(block, 0, 0, 0x85, REG_R9, REG_R9);
@@ -1439,6 +1475,9 @@ build_link_routine(codeblock_t *block)
     rx_patch(nmi_ok, nmi_done);
     lx_abs(block, 0, 0, 0x8b, REG_R9, &nmi_mask);
     rx_rr(block, 0, 0, 0x85, REG_R9, REG_R9);
+    miss[nr_miss++] = rx_jcc(block, RX_CC_NZ);
+    lx_abs(block, 0, 0, 0x8b, REG_R9, &nmi);
+    rx_test_ri(block, REG_R9, 2);
     miss[nr_miss++] = rx_jcc(block, RX_CC_NZ);
     rx_patch(rx_jmp(block), nmi_done);
 
@@ -1637,6 +1676,17 @@ codegen_backend_prologue(codeblock_t *block)
     link_site = 0;
 #    endif
     host_x86_MOV64_REG_IMM(block, REG_RBP, ((uintptr_t) &cpu_state) + 128);
+#    ifdef CODEGEN_BACKEND_HAS_BLOCK_LINK
+    /*The slot of the block's end, which the link routine reads first when
+      the block is done: start loading each of its lines now, as the slots
+      are seldom in cache*/
+    if (codegen_block_link) {
+        uintptr_t slot = (uintptr_t) &codegen_link_slots[get_block_nr(block)][0];
+
+        for (uintptr_t line = slot & ~(uintptr_t) 63; line < slot + sizeof(codegen_link_slot_t); line += 64)
+            lx_abs(block, 0, 0, 0x0f18, 1, (void *) line); /*PREFETCHT0*/
+    }
+#    endif
     if (block->flags & CODEBLOCK_HAS_FPU) {
         host_x86_MOV32_REG_ABS(block, REG_EAX, &cpu_state.TOP);
         host_x86_SUB32_REG_IMM(block, REG_EAX, block->TOP);
