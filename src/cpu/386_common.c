@@ -50,12 +50,12 @@ uint32_t cr4;
 uint32_t dr[8];
 
 int cpu_debug_regs_486 = 0;
-int cpu_dr_armed       = 0;
+
+/* One cache line, read as two words by the block-to-block transfer */
+cpu_events_t cpu_events __attribute__((aligned(64)));
 
 uint32_t use32;
 int      stack32;
-
-int      cpu_init = 0;
 
 uint32_t *eal_r;
 uint32_t *eal_w;
@@ -73,7 +73,6 @@ extern int      optype;
 extern uint32_t pccache;
 extern int      ioapic_lint1_raise(void);
 
-int      new_ne            = 0;
 int      in_sys            = 0;
 int      unmask_a20_in_smm = 0;
 uint32_t old_rammask       = 0xffffffff;
@@ -83,7 +82,12 @@ int soft_reset_mask = 0;
 int smi_latched = 0;
 int smm_in_hlt  = 0;
 int smi_block   = 0;
-int cpu_halted  = 0;
+
+/* ACPI clock control, see cpu.h. */
+int cpu_stpclk          = 0;
+int cpu_throttle_run    = 0;
+int cpu_throttle_period = 8;
+int cpu_throttle_break  = 0;
 
 /* RSM restarted a HLT and a latched SMI is about to be entered. */
 static int smm_rsm_restart = 0;
@@ -686,6 +690,8 @@ smm_seg_load(x86seg *s)
             cpu_cur_status |= CPU_STATUS_NOTFLATSS;
         set_stack32((s->ar_high & 0x40) ? 1 : 0);
     }
+    cpu_set_wide_status(s);
+    cpu_mark_64k_status(s);
 }
 
 static void
@@ -1840,6 +1846,7 @@ leave_smm(void)
         if (cpu_state.eflags & VM_FLAG)
             cpu_cur_status |= CPU_STATUS_V86;
     }
+    cpu_update_64k_status();
 
     nmi_mask = 1;
 
@@ -1917,7 +1924,7 @@ x86_int(int num)
         if ((num << 2UL) + 3UL > idt.limit) {
             if (idt.limit < 35) {
                 cpu_state.abrt = 0;
-                softresetx86();
+                softresetx86_from(SOFT_RESET_SHUTDOWN);
                 cpu_set_edx();
 #ifdef ENABLE_386_COMMON_LOG
                 x386_common_log("Triple fault in real mode - reset\n");
@@ -2243,11 +2250,11 @@ sysenter(UNUSED(uint32_t fetchdat))
     cpu_state.seg_ss.ar_high    = 0xcf;
     cpu_state.seg_ss.checked    = 1;
 #ifdef USE_DYNAREC
-    codegen_flat_ss = 0;
+    codegen_flat_ss = codegen_wide_ss = 0;
 #endif
 
-    cpu_cur_status &= ~(CPU_STATUS_NOTFLATSS | CPU_STATUS_V86);
-    cpu_cur_status |= (CPU_STATUS_USE32 | CPU_STATUS_STACK32 /* | CPU_STATUS_PMODE*/);
+    cpu_cur_status &= ~(CPU_STATUS_NOTFLATSS | CPU_STATUS_NOTWIDESS | CPU_STATUS_V86);
+    cpu_cur_status |= (CPU_STATUS_USE32 | CPU_STATUS_STACK32 | CPU_STATUS_NOT64K /* | CPU_STATUS_PMODE*/);
     set_use32(1);
     set_stack32(1);
 
@@ -2318,6 +2325,7 @@ sysexit(UNUSED(uint32_t fetchdat))
     cpu_state.seg_cs.checked    = 1;
     oldcpl                      = 3;
 
+    cpu_cur_status |= CPU_STATUS_NOT64K;
     cpu_state.seg_ss.seg        = (((msr.sysenter_cs + 24) & 0xfffc) | 3);
     cpu_state.seg_ss.base       = 0;
     cpu_state.seg_ss.limit_low  = 0;
@@ -2327,12 +2335,12 @@ sysexit(UNUSED(uint32_t fetchdat))
     cpu_state.seg_ss.ar_high    = 0xcf;
     cpu_state.seg_ss.checked    = 1;
 #ifdef USE_DYNAREC
-    codegen_flat_ss = 0;
+    codegen_flat_ss = codegen_wide_ss = 0;
 #endif
 
-    cpu_cur_status &= ~(CPU_STATUS_NOTFLATSS /* | CPU_STATUS_V86*/);
+    cpu_cur_status &= ~(CPU_STATUS_NOTFLATSS | CPU_STATUS_NOTWIDESS /* | CPU_STATUS_V86*/);
     cpu_cur_status |= (CPU_STATUS_USE32 | CPU_STATUS_STACK32 | CPU_STATUS_PMODE);
-    flushmmucache_nopc();
+    flushmmucache_ring3();
     set_use32(1);
     set_stack32(1);
 
@@ -2386,11 +2394,11 @@ syscall_op(UNUSED(uint32_t fetchdat))
     cpu_state.seg_ss.ar_high    = 0xcf;
     cpu_state.seg_ss.checked    = 1;
 #ifdef USE_DYNAREC
-    codegen_flat_ss = 0;
+    codegen_flat_ss = codegen_wide_ss = 0;
 #endif
 
-    cpu_cur_status &= ~(CPU_STATUS_NOTFLATSS | CPU_STATUS_V86);
-    cpu_cur_status |= (CPU_STATUS_USE32 | CPU_STATUS_STACK32 | CPU_STATUS_PMODE);
+    cpu_cur_status &= ~(CPU_STATUS_NOTFLATSS | CPU_STATUS_NOTWIDESS | CPU_STATUS_V86);
+    cpu_cur_status |= (CPU_STATUS_USE32 | CPU_STATUS_STACK32 | CPU_STATUS_PMODE | CPU_STATUS_NOT64K);
     set_use32(1);
     set_stack32(1);
 
@@ -2435,6 +2443,7 @@ sysret(UNUSED(uint32_t fetchdat))
     oldcpl                      = 3;
 
     /* SS */
+    cpu_cur_status |= CPU_STATUS_NOT64K;
     SS                          = ((AMD_SYSRET_SB + 8) & 0xfffc) | 3;
     cpu_state.seg_ss.base       = 0;
     cpu_state.seg_ss.limit_low  = 0;
@@ -2444,12 +2453,12 @@ sysret(UNUSED(uint32_t fetchdat))
     cpu_state.seg_ss.ar_high    = 0xcf;
     cpu_state.seg_ss.checked    = 1;
 #ifdef USE_DYNAREC
-    codegen_flat_ss = 0;
+    codegen_flat_ss = codegen_wide_ss = 0;
 #endif
 
-    cpu_cur_status &= ~(CPU_STATUS_NOTFLATSS /* | CPU_STATUS_V86*/);
+    cpu_cur_status &= ~(CPU_STATUS_NOTFLATSS | CPU_STATUS_NOTWIDESS /* | CPU_STATUS_V86*/);
     cpu_cur_status |= (CPU_STATUS_USE32 | CPU_STATUS_STACK32 | CPU_STATUS_PMODE);
-    flushmmucache_nopc();
+    flushmmucache_ring3();
     set_use32(1);
     set_stack32(1);
 
