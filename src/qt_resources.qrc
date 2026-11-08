@@ -250,5 +250,7 @@
         <file alias="machine_generic_tower_pc.png">qt/assets/systemicons/machine_generic_tower_pc.png</file>
         <file alias="machine_hp_vectra_486n.png">qt/assets/systemicons/machine_hp_vectra_486n.png</file>
         <file alias="machine_tulip_compact_2.png">qt/assets/systemicons/machine_tulip_compact_2.png</file>        
+        <file alias="logo_amd.png">qt/assets/systemicons/logo_amd.png</file>
+        <file alias="logo_cyrix.png">qt/assets/systemicons/logo_cyrix.png</file>
     </qresource>
 </RCC>
