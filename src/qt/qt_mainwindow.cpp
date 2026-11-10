@@ -45,6 +45,7 @@ extern "C" {
 #include <86box/keyboard.h>
 #include <86box/plat.h>
 #include <86box/ui.h>
+#include <86box/runctl.h>
 #include <86box/video.h>
 #include <86box/mouse.h>
 #include <86box/machine.h>
@@ -70,7 +71,6 @@ extern int qt_nvr_save(void);
 extern void nmi_raise(void);
 
 extern bool cpu_thread_running;
-extern bool fast_forward;
 };
 
 #include <QGuiApplication>
@@ -461,20 +461,15 @@ MainWindow::MainWindow(QWidget *parent)
 
     connect(qApp, &QGuiApplication::applicationStateChanged, [this](Qt::ApplicationState state) {
         if (state == Qt::ApplicationState::ApplicationActive) {
-            if (auto_paused) {
-                plat_pause(0);
-                auto_paused = 0;
-            }
+            runctl_resume(RUN_PAUSE_FOCUS);
         } else {
             if (mouse_capture)
                 emit setMouseCapture(false);
 
             keyboard_all_up();
 
-            if (do_auto_pause && !dopause) {
-                auto_paused = 1;
-                plat_pause(1);
-            }
+            if (do_auto_pause)
+                runctl_pause(RUN_PAUSE_FOCUS);
         }
     });
 
@@ -792,6 +787,9 @@ MainWindow::MainWindow(QWidget *parent)
         case FULLSCR_SCALE_CENTER43:
             ui->actionFullScreen_center43->setChecked(true);
             break;
+        case FULLSCR_SCALE_INT43_VERT:
+            ui->actionFullScreen_int43_vert->setChecked(true);
+            break;
     }
 
     actGroup = new QActionGroup(this);
@@ -830,6 +828,7 @@ MainWindow::MainWindow(QWidget *parent)
     actGroup->addAction(ui->actionFullScreen_int43);
     actGroup->addAction(ui->actionFullScreen_center);
     actGroup->addAction(ui->actionFullScreen_center43);
+    actGroup->addAction(ui->actionFullScreen_int43_vert);
     switch (video_gl_input_scale_mode) {
         default:
             break;
@@ -1068,7 +1067,7 @@ MainWindow::closeEvent(QCloseEvent *event)
     }
 
     qt_nvr_save();
-    cpu_thread_run = 0;
+    runctl_request_stop();
     event->accept();
 }
 
@@ -1379,7 +1378,7 @@ MainWindow::on_actionNon_maskable_interrupt_triggered()
 void
 MainWindow::on_actionPause_triggered()
 {
-    plat_pause(dopause ^ 1);
+    runctl_pause_user_toggle();
 }
 
 void
@@ -1410,8 +1409,7 @@ MainWindow::setVmmSupervised(bool supervised)
 void
 MainWindow::on_actionSettings_triggered()
 {
-    const int currentPause = dopause;
-    plat_pause(1);
+    runctl_pause_wait(RUN_PAUSE_SYNC);
     Settings settings(this);
     settings.setModal(true);
     settings.setWindowModality(Qt::WindowModal);
@@ -1440,7 +1438,7 @@ MainWindow::on_actionSettings_triggered()
         case QDialog::Rejected:
             break;
     }
-    plat_pause(currentPause);
+    runctl_resume(RUN_PAUSE_SYNC);
 }
 
 void
@@ -1841,24 +1839,20 @@ MainWindow::eventFilter(QObject *receiver, QEvent *event)
     }
 
     if (receiver == this) {
-        static auto curdopause = dopause;
         if (event->type() == QEvent::WindowBlocked) {
             if (qt_osd_is_visible())
                 qt_osd_toggle();
             window_blocked     = true;
             mouse_was_captured = (mouse_capture != 0);
-            if (do_auto_dialog_pause > 0) {
-                curdopause = dopause;
-                plat_pause(isNonPause ? dopause : (isShowMessage ? 2 : 1));
-            }
+            if ((do_auto_dialog_pause > 0) && !isNonPause)
+                runctl_pause(RUN_PAUSE_DIALOG);
             if (mouse_was_captured)
                 plat_mouse_capture(0);
             releaseKeyboard();
             main_window_blocked = 1;
         } else if (event->type() == QEvent::WindowUnblocked) {
             window_blocked = false;
-            if (do_auto_dialog_pause > 0)
-                plat_pause(curdopause);
+            runctl_resume(RUN_PAUSE_DIALOG);
             if (mouse_was_captured) {
                 plat_mouse_capture(1);
             }
@@ -1970,7 +1964,6 @@ MainWindow::showMessage_(int flags, const QString &header, const QString &messag
     if (done) {
         *done = false;
     }
-    isShowMessage = true;
 
     auto defaultheader = QString();
     if (header.isEmpty()) {
@@ -1994,7 +1987,6 @@ MainWindow::showMessage_(int flags, const QString &header, const QString &messag
     if (done) {
         *done = true;
     }
-    isShowMessage = false;
     if (cpu_thread_run == 0)
         QApplication::exit(-1);
 }
@@ -2048,7 +2040,7 @@ MainWindow::keyReleaseEvent(QKeyEvent *event)
         return;
     if (event->key() == Qt::Key_Pause) {
         if (keyboard_recv_ui(0x38) && keyboard_recv_ui(0x138)) {
-            plat_pause(dopause ^ 1);
+            runctl_pause_user_toggle();
         }
     }
 
@@ -2261,6 +2253,7 @@ update_fullscreen_scale_checkboxes(Ui::MainWindow *ui, QAction *selected)
     ui->actionFullScreen_int43->setChecked(selected == ui->actionFullScreen_int43);
     ui->actionFullScreen_center->setChecked(selected == ui->actionFullScreen_center);
     ui->actionFullScreen_center43->setChecked(selected == ui->actionFullScreen_center43);
+    ui->actionFullScreen_int43_vert->setChecked(selected == ui->actionFullScreen_int43_vert);
 
     {
         auto widget = ui->stackedWidget->currentWidget();
@@ -2324,6 +2317,13 @@ MainWindow::on_actionFullScreen_center43_triggered()
 {
     video_fullscreen_scale = FULLSCR_SCALE_CENTER43;
     update_fullscreen_scale_checkboxes(ui, ui->actionFullScreen_center43);
+}
+
+void
+MainWindow::on_actionFullScreen_int43_vert_triggered()
+{
+    video_fullscreen_scale = FULLSCR_SCALE_INT43_VERT;
+    update_fullscreen_scale_checkboxes(ui, ui->actionFullScreen_int43_vert);
 }
 
 void
@@ -2397,7 +2397,7 @@ MainWindow::on_actionUpdate_mouse_every_CPU_frame_triggered()
 void
 MainWindow::on_actionFast_forward_triggered()
 {
-    fast_forward ^= 1;
+    runctl_fast_forward_toggle();
 }
 
 void
@@ -2604,11 +2604,14 @@ MainWindow::updateUiPauseState()
     emit vmmRunningStateChanged(static_cast<VMManagerProtocol::RunningState>(window_blocked ? (dopause ? VMManagerProtocol::RunningState::PausedWaiting : VMManagerProtocol::RunningState::RunningWaiting) : (VMManagerProtocol::RunningState) dopause));
 }
 
-/* The menu's check follows fast forward set from elsewhere (automation). */
+/* Fast forward can be set from the menu, the accelerator or automation;
+   the check and the muted sound icon follow runctl. */
 void
 MainWindow::updateUiFastForwardState()
 {
-    ui->actionFast_forward->setChecked(fast_forward);
+    ui->actionFast_forward->setChecked(runctl_mode() == RUN_MODE_FAST);
+    if (status)
+        status->updateSoundIcon();
 }
 
 void
@@ -2911,10 +2914,7 @@ MainWindow::on_actionACPI_Shutdown_triggered()
     }
 
     if (device_has_power_button()) {
-        const int was_paused = dopause;
-        plat_pause(1); /* Wait for CPU acknowledgement before changing device state. */
-        device_power_button();
-        plat_pause(was_paused);
+        runctl_call_wait([](void *) { device_power_button(); }, nullptr);
         return;
     }
 

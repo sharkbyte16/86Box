@@ -116,6 +116,7 @@ private slots:
     void on_actionFullScreen_int43_triggered();
     void on_actionFullScreen_center_triggered();
     void on_actionFullScreen_center43_triggered();
+    void on_actionFullScreen_int43_vert_triggered();
     void on_actionFullScreen_keepRatio_triggered();
     void on_actionFullScreen_43_triggered();
     void on_actionFullScreen_stretch_triggered();
@@ -227,7 +228,6 @@ private:
     QIcon   caps_icon, scroll_icon, num_icon, kana_icon;
     QIcon   caps_icon_off, scroll_icon_off, num_icon_off, kana_icon_off;
 
-    bool isShowMessage  = false;
     bool isNonPause     = false;
     bool window_blocked = false;
 
