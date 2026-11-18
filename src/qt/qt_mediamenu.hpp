@@ -133,9 +133,9 @@ private:
     int floppyEjectPos;
     int floppyImageHistoryPos[MAX_PREV_IMAGES];
 
-    int cdromMutePos;
-    int cdromEjectPos;
-    int cdromImageHistoryPos[MAX_PREV_IMAGES];
+    int cdromMutePos[32];
+    int cdromEjectPos[32];
+    int cdromImageHistoryPos[32][MAX_PREV_IMAGES];
 
     int rdiskEjectPos;
     int rdiskImageHistoryPos[MAX_PREV_IMAGES];

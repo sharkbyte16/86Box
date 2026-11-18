@@ -12,6 +12,7 @@
  *          Miran Grca, <mgrca8@gmail.com>
  *          Fred N. van Kempen, <decwiz@yahoo.com>
  *          Jasmine Iwanek, <jriwanek@gmail.com>
+ *          Marcos Alves
  *
  *          Copyright 2008-2020 Sarah Walker.
  *          Copyright 2016-2020 Miran Grca.
@@ -20,6 +21,7 @@
  *          Copyright 2021      dob205
  *          Copyright 2021      Andreas J. Reichel.
  *          Copyright 2021-2026 Jasmine Iwanek.
+ *          Copyright 2026      Marcos Alves.
  */
 #include <inttypes.h>
 #include <stdarg.h>
@@ -70,6 +72,7 @@
 #include <86box/isamem.h>
 #include <86box/isarom.h>
 #include <86box/isartc.h>
+#include <86box/pcmcia.h>
 #include <86box/lpt.h>
 #include <86box/serial.h>
 #include <86box/keyboard.h>
@@ -214,6 +217,7 @@ int      confirm_reset                          = 1;              /* (G) enable 
 int      confirm_exit                           = 1;              /* (G) enable exit confirmation */
 int      confirm_save                           = 1;              /* (G) enable save confirmation */
 int      chd_precache_level                     = 0;              /* (G) CHD precache level */
+int      fast_forward_new_machines              = 0;              /* (G) New machines start in fast forward */
 int      pit_mode                               = -1;             /* (C) force setting PIT mode */
 int      fm_driver                              = 0;              /* (C) select FM sound driver */
 int      open_dir_usr_path                      = 0;              /* (G) default file open dialog directory
@@ -224,6 +228,7 @@ int      do_auto_pause                          = 0;              /* (G) Auto-pa
                                                                          loss */
 int      do_auto_dialog_pause                   = 0;              /* (G) Auto-pause the emulator on dialog boxes */
 int      force_constant_mouse                   = 0;              /* (C) Force constant updating of the mouse */
+int      fast_forward_on_start                  = 0;              /* (C) Start the machine in fast forward */
 int      hook_enabled                           = 1;              /* (C) Keyboard hook is enabled */
 int      test_mode                              = 0;              /* (C) Test mode */
 char     uuid[MAX_UUID_LEN]                     = { '\0' };       /* (C) UUID or machine identifier */
@@ -2043,6 +2048,9 @@ pc_reset_hard_init(void)
 
     /* Reset any ISA RTC cards. */
     isartc_reset();
+
+    /* The PC Card controller and its cards, if fitted. */
+    pcmcia_reset();
 
     /* Initialize the Voodoo cards here inorder to minimize
        the chances of the SCSI controller ending up on the bridge. */
