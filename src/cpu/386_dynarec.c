@@ -300,10 +300,11 @@ cpu_throttle_stall(int32_t ran)
     cycles -= stall;
 }
 
-/* Compiled blocks hold no debug-register checks. Data and I/O breakpoints can
-   fire on any access, so they still disable the recompiler outright; an
-   execution breakpoint only blocks the block covering it, and a block spans at
-   most two pages. Out of line, as it only runs with a breakpoint armed. */
+#ifdef USE_DYNAREC
+/* Compiled blocks hold no debug-register checks. Data breakpoints can fire on
+   any access, so they still disable the recompiler outright; an execution
+   breakpoint only blocks the block covering it, and a block spans at most two
+   pages. Out of line, as it only runs with a breakpoint armed. */
 static __attribute__((noinline)) int
 dr_blocks_cache(void)
 {
@@ -314,9 +315,17 @@ dr_blocks_cache(void)
         if (!((dr[7] >> (i << 1)) & 0x03))
             continue;
 
-        /* RW 00 is execution; DR0-3 and cs + pc are both linear. */
-        if ((dr[7] >> (16 + (i << 2))) & 0x03)
-            return 1;
+        /* RW 00 is execution; DR0-3 and cs + pc are both linear. An I/O
+           breakpoint (RW 10) needs nothing of the recompiled code: the port
+           access checks it, and the instruction ends the block (io_op_end). */
+        switch ((dr[7] >> (16 + (i << 2))) & 0x03) {
+            case 0x00:
+                break;
+            case 0x02:
+                continue;
+            default:
+                return 1;
+        }
 
         if (((dr[i] >> 12) == page) || ((dr[i] >> 12) == (page + 1)))
             return 1;
@@ -330,7 +339,6 @@ dr_blocks_cache(void)
 #define CACHE_ON_DBG(dbg) (!(cr0 & (1 << 30)) && !(cpu_state.flags & T_FLAG) && !((dbg) && cpu_dr_armed && dr_blocks_cache()))
 #define CACHE_ON()        CACHE_ON_DBG(cpu_debug_regs_486)
 
-#ifdef USE_DYNAREC
 int32_t         cycles_main = 0;
 #    ifdef CODEGEN_BACKEND_HAS_BLOCK_LINK
 /* The block link routine does the loop-top stores itself. */
@@ -797,22 +805,17 @@ exec386_dynarec_dyn(const int dbg)
            also catch any page faults at this stage */
         valid_block = (codeblock_pc_cs(block) == key) && (block->phys == phys_addr) && !((block->status ^ cpu_cur_status) & CPU_STATUS_FLAGS) && ((block->status & cpu_cur_status & CPU_STATUS_MASK) == (cpu_cur_status & CPU_STATUS_MASK));
         if (!valid_block) {
-            page_t  *page = &pages[phys_addr >> 12];
-            uint64_t mask = (uint64_t) 1 << ((phys_addr >> PAGE_MASK_SHIFT) & PAGE_MASK_MASK);
-            int      byte_offset = (phys_addr >> PAGE_BYTE_MASK_SHIFT) & PAGE_BYTE_MASK_OFFSET_MASK;
-            uint64_t byte_mask   = 1ULL << (phys_addr & PAGE_BYTE_MASK_MASK);
-
-            if ((page->code_present_mask & mask) ||
-                ((page->mem != page_ff) && (page->byte_code_present_mask[byte_offset] & byte_mask)))
-            {
-                /* Walk page tree to see if we find the correct block */
-                codeblock_t *new_block = codeblock_tree_find(phys_addr, cs, cs + cpu_state.pc);
-                if (new_block) {
-                    valid_block = (codeblock_pc_cs(new_block) == key) && (new_block->phys == phys_addr) && !((new_block->status ^ cpu_cur_status) & CPU_STATUS_FLAGS) && ((new_block->status & cpu_cur_status & CPU_STATUS_MASK) == (cpu_cur_status & CPU_STATUS_MASK));
-                    if (valid_block) {
-                        block = new_block;
-                        codeblock_hash[hash] = get_block_nr(block);
-                    }
+            /* Walk page tree to see if we find the correct block. Whatever
+               the page's code-present bits say: a flush clears them over the
+               blocks it puts on the dirty list, which stay in the tree, and
+               the hash finds such a block whenever no other one took its
+               slot. */
+            codeblock_t *new_block = codeblock_tree_find(phys_addr, cs, cs + cpu_state.pc);
+            if (new_block) {
+                valid_block = (codeblock_pc_cs(new_block) == key) && (new_block->phys == phys_addr) && !((new_block->status ^ cpu_cur_status) & CPU_STATUS_FLAGS) && ((new_block->status & cpu_cur_status & CPU_STATUS_MASK) == (cpu_cur_status & CPU_STATUS_MASK));
+                if (valid_block) {
+                    block = new_block;
+                    codeblock_hash[hash] = get_block_nr(block);
                 }
             }
         }
@@ -1030,6 +1033,9 @@ exec386_dynarec_dyn(const int dbg)
             if (new_ne)
                 CPU_BLOCK_END();
             if ((cpu_state.flags & T_FLAG) || (trap == 2))
+                CPU_BLOCK_END();
+            /* An I/O breakpoint matched: #DB right after this instruction. */
+            if (trap & 4)
                 CPU_BLOCK_END();
             if (smi_line)
                 CPU_BLOCK_END();
@@ -1340,6 +1346,17 @@ exec386_dynarec_common(int32_t cycs, const int dbg)
                    last instruction executed. */
                 if (cpu_flush_pending == 1)
                     cpu_flush_pending++;
+                /* A port matched an I/O breakpoint: the instruction ended the
+                   block (io_op_trap), and #DB comes right after it, as the
+                   interpreted block does it (block_ended). Data and execution
+                   breakpoints keep the code interpreted (dr_blocks_cache()). */
+                if (dbg && (trap & 4) && !cpu_state.abrt && !new_ne) {
+                    flags_rebuild();
+                    trap            = 0;
+                    oldcs           = CS;
+                    cpu_state.oldpc = cpu_state.pc;
+                    x86_int(1);
+                }
             }
             /* Moved on by linked blocks, and by a TSC write (update_tsc_write()). */
             oldtsc = tsc_old;
