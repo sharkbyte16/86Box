@@ -64,6 +64,8 @@ extern uint64_t harness_irq_offthread;
 extern uint64_t harness_svga_offthread;
 extern uint64_t harness_svga_recalc_calls;
 extern uint64_t harness_svga_ramdac_calls;
+extern uint64_t harness_maps_offthread;
+extern uint64_t harness_maps_calls;
 extern void     harness_ram_alloc(void);
 extern void     harness_video_luts_init(void);
 extern uint8_t (*harness_pci_read)(int func, int addr, int len, void *priv);
@@ -5962,6 +5964,126 @@ vectors_cce_display(rage128_t *dev)
     wr(dev, RAGE128_CRTC_GEN_CNTL, gen_save);
 }
 
+/* CONFIG_CNTL written by packets. The write changes the VGA I/O decode
+   and the aperture handlers, and the emulator's I/O and memory tables
+   that hold them are read by the processor with no lock; a memory table
+   slot is empty while it is rebuilt, so a guest access made then would
+   be lost. The register must change when the packet runs, but the
+   handler changes must be made by the CPU thread, which the packet
+   thread waits for. harness_maps_offthread counts handler changes made
+   off the CPU thread. */
+static void
+vectors_cce_config_cntl(rage128_t *dev)
+{
+    uint32_t *tbl     = (uint32_t *) (ram + GART_TABLE_PHYS);
+    uint32_t *ring    = (uint32_t *) (ram + RING_PHYS);
+    uint32_t  cc_save = rd(dev, RAGE128_CONFIG_CNTL);
+    uint32_t  cc      = cc_save & ~0x1fu;
+    uint32_t  pkt[2];
+    uint64_t  off0;
+    uint64_t  calls0;
+
+    harness_ram_alloc();
+    harness_sysmem_stray = 0;
+    rr_reset(dev);
+    wr(dev, RAGE128_PM4_BUFFER_CNTL, 0x70000000);
+    wr(dev, RAGE128_PM4_MICRO_CNTL, 0x40000000);
+    off0 = harness_maps_offthread;
+
+    /* PIO: aperture 0 16 bpp swap, aperture 1 32 bpp swap, register
+       aperture swapped. */
+    calls0 = harness_maps_calls;
+    pkt[0] = RAGE128_CONFIG_CNTL >> 2;
+    pkt[1] = cc | 1u | (2u << 2) | (1u << 4);
+    pio_submit(dev, pkt, 2);
+    rr_quiesce(dev);
+    check32("cce config: a packet write of CONFIG_CNTL lands",
+            rd(dev, RAGE128_CONFIG_CNTL) & 0x1fu, 1u | (2u << 2) | (1u << 4));
+    check_true("cce config: the packet write installs the swapped aperture handlers",
+               dev->lfb_mapping.write_l == rage128_lfb_writel_sw16
+                   && dev->agp_mapping.write_l == rage128_agp_writel_sw32
+                   && dev->mmio_mapping.write_l == rage128_mmio_writel_sw);
+    check_true("cce config: the handlers are installed on the CPU thread",
+               harness_maps_calls - calls0 >= 3);
+    check32("cce config: PIO, no handler change off the CPU thread",
+            (uint32_t) (harness_maps_offthread - off0), 0);
+
+    /* Ring: the same write back to unswapped, fetched by bus master. */
+    rr_reset(dev);
+    memset(ram + GART_TABLE_PHYS, 0, 0x1000);
+    memset(ram + RING_PHYS, 0, 0x1000);
+    tbl[RING_CARD_ADDR >> 12] = RING_PHYS;
+    pci_wr8(0x04, 0x07);
+    wr(dev, RAGE128_BUS_CNTL, rd(dev, RAGE128_BUS_CNTL) & ~RAGE128_BUS_CNTL_BUS_MASTER_DIS);
+    gart_table_on(dev, GART_TABLE_PHYS);
+    wr(dev, RAGE128_AGP_BASE, 0);
+    wr(dev, RAGE128_PM4_BUFFER_OFFSET, RING_CARD_ADDR);
+    ring[0] = RAGE128_CONFIG_CNTL >> 2;
+    ring[1] = cc;
+    off0    = harness_maps_offthread;
+    wr(dev, RAGE128_PM4_BUFFER_CNTL, 0x80000003);
+    wr(dev, RAGE128_PM4_BUFFER_DL_WPTR, 2);
+    rr_quiesce(dev);
+    check32("cce config: a ring write of CONFIG_CNTL lands",
+            rd(dev, RAGE128_CONFIG_CNTL) & 0x1fu, 0);
+    check_true("cce config: the ring write puts back the unswapped handlers",
+               dev->lfb_mapping.write_l == rage128_lfb_writel
+                   && dev->agp_mapping.write_l == rage128_agp_writel
+                   && dev->mmio_mapping.write_l == rage128_mmio_writel);
+    check32("cce config: ring, no handler change off the CPU thread",
+            (uint32_t) (harness_maps_offthread - off0), 0);
+
+    /* The packet thread waits for the CPU thread: a register write behind
+       the CONFIG_CNTL write in the same stream does not run while the
+       hand-off is unanswered. Nothing here answers it until the sample
+       is taken: the register file and the post are read from the device,
+       not through a register read, which would answer it. A sample is
+       taken only while the post is still pending and the write not yet
+       made; a pump that answered it first leaves no such moment, and the
+       stream is tried again. */
+    {
+        int      tries, valid = 0, waited = 0;
+        uint32_t wptr = 2, scratch_at = 0, scratch_end;
+
+        wr(dev, RAGE128_GUI_SCRATCH_REG0, 0);
+        for (tries = 0; tries < 5 && !valid; tries++) {
+            uint32_t marker = 0xc0f90000u | (uint32_t) tries;
+            int      ms;
+
+            ring[(wptr + 0) & 15u] = RAGE128_CONFIG_CNTL >> 2;
+            ring[(wptr + 1) & 15u] = cc | 1u;
+            ring[(wptr + 2) & 15u] = RAGE128_GUI_SCRATCH_REG0 >> 2;
+            ring[(wptr + 3) & 15u] = marker;
+            wptr = (wptr + 4) & 15u; /* a 16-dword ring (size field 3) */
+            wr(dev, RAGE128_PM4_BUFFER_DL_WPTR, wptr);
+            for (ms = 0; ms < 1000 && !atomic_load(&dev->cce_cfg_req); ms++)
+                lap_msleep(1);
+            lap_msleep(20);
+            if (atomic_load(&dev->cce_cfg_req) && (dev->config_cntl & 0x1fu) == 0) {
+                valid      = 1;
+                waited     = ms < 1000;
+                scratch_at = dev->gui_scratch[0];
+            }
+            rr_quiesce(dev);
+            scratch_end = rd(dev, RAGE128_GUI_SCRATCH_REG0);
+            wr(dev, RAGE128_CONFIG_CNTL, cc);
+            wr(dev, RAGE128_GUI_SCRATCH_REG0, 0);
+            if (!valid && scratch_end != marker)
+                break;
+        }
+        check_true("cce config: the stream reaches the hand-off with it unanswered", valid && waited);
+        check32("cce config: the write behind CONFIG_CNTL waits for the hand-off", scratch_at, 0);
+        check32("cce config: it runs once the CPU thread answers", scratch_end,
+                0xc0f90000u | (uint32_t) (tries - 1));
+    }
+    check_true("cce config: no stray bus-master access", harness_sysmem_stray == 0);
+
+    rr_reset(dev);
+    wr(dev, RAGE128_PCI_GART_PAGE, 1);
+    pci_wr8(0x04, 0x03);
+    wr(dev, RAGE128_CONFIG_CNTL, cc_save);
+}
+
 /* ------------------------------------------------------------------ */
 /* GART selection. With PCI_GART_PAGE bit 0 clear an AGP board walks   */
 /* the on-chip table only when BM_CHUNK_0_VAL forces PM4 reads (bit    */
@@ -7123,6 +7245,325 @@ vectors_agp_straddle(rage128_t *dev)
             *(uint32_t *) &dev->svga.vram[0], 0xc0c0c000);
 
     wr(dev, RAGE128_PCI_GART_PAGE, 1);
+}
+
+/* ------------------------------------------------------------------ */
+/* A write-back to guest memory is a bus-master write, made where the */
+/* host's bus-master write path can see it and on the emulator's CPU  */
+/* thread, the only thread that may change guest memory. A PCI bus    */
+/* master's write to DRAM is snooped by the chipset (82443BX          */
+/* datasheet, WSC# signal description, p. 2-6), so it reaches every   */
+/* cached copy of the bytes, and it cannot land inside the            */
+/* processor's locked update of a page-table entry (HLOCK#, p. 2-2).  */
+/* A solid PAINT_MULTI from the ring, run by the executor, fills 16   */
+/* pixels of a surface in the AGP half of card space; its staged      */
+/* window is written back when the operation ends. The hook counts    */
+/* every bus-master write into the destination page and the ones made */
+/* on the executor's thread. Leg 1 reaches the page through the on-   */
+/* chip table with AGP_BASE 0, the PCI GART setup of the Linux DRM on */
+/* a PCI board; leg 2 through the chipset aperture, with the table    */
+/* off and AGP_BASE set.                                              */
+/* ------------------------------------------------------------------ */
+#define GW_TABLE 0x00180000u /* guest page of the on-chip table */
+#define GW_DST   0x02070000u /* card address of the destination, AGP half */
+#define GW_PHYS  0x0011a000u /* guest page the table maps it to */
+#define GW_APER  0x00400000u /* AGP_BASE for the aperture leg */
+#define GW_FILL  0x00c0ffeeu
+
+static atomic_int gw_lo, gw_calls, gw_cce_calls;
+
+static void
+gw_write_hook(uint32_t addr, uint32_t len)
+{
+    uint32_t lo = (uint32_t) atomic_load(&gw_lo);
+
+    (void) len;
+    if (addr < lo || addr >= lo + 0x1000u)
+        return;
+    atomic_fetch_add(&gw_calls, 1);
+    if (rage128_on_cce_thread)
+        atomic_fetch_add(&gw_cce_calls, 1);
+}
+
+/* The ring for one leg: PAINT_MULTI, solid brush GW_FILL, ROP PATCOPY,
+   32 bpp, destination GW_DST at a 64-pixel pitch, pixels (0,0) to
+   (15,0). Returns the dword count. */
+static int
+gw_ring(uint32_t *ring)
+{
+    int n = 0;
+
+    ring[n++] = 0xc0049100u;
+    ring[n++] = 0x00000002u | (13u << 4) | (6u << 8) | (0xf0u << 16) | (1u << 28) | (1u << 29)
+        | (1u << 30);
+    ring[n++] = (8u << 21) | (GW_DST >> 5);
+    ring[n++] = GW_FILL;
+    ring[n++] = 0x00000000u; /* top left (0,0) */
+    ring[n++] = 0x00010010u; /* bottom right (16,1), exclusive */
+    return n;
+}
+
+static void
+gw_kick(rage128_t *dev, int n)
+{
+    wr(dev, RAGE128_PM4_BUFFER_OFFSET, RING_CARD_ADDR);
+    wr(dev, RAGE128_PM4_BUFFER_DL_RPTR, 0);
+    wr(dev, RAGE128_PM4_BUFFER_DL_WPTR, 0);
+    wr(dev, RAGE128_PM4_BUFFER_CNTL, 0x8000000a);
+    wr(dev, RAGE128_PM4_BUFFER_DL_WPTR, (uint32_t) n);
+}
+
+static void
+vectors_gart_writeback_thread(rage128_t *dev)
+{
+    void    (*hook_save)(uint32_t addr, uint32_t len) = harness_bm_write_hook;
+    uint8_t   pci_cmd_save = pci_rd8(0x04);
+    uint32_t *tbl;
+    uint32_t  px[2];
+    int       calls[2], cce[2], n;
+
+    harness_ram_alloc();
+    harness_sysmem_stray = 0;
+    pci_wr8(0x04, 0x07);
+    wr(dev, RAGE128_BUS_CNTL, rd(dev, RAGE128_BUS_CNTL) & ~RAGE128_BUS_CNTL_BUS_MASTER_DIS);
+    wr(dev, 0x16e8, 0x1fff1fff); /* DEFAULT_SC_BOTTOM_RIGHT */
+    wr(dev, 0x1660, 0x00000000); /* AUX_SC_CNTL off */
+    harness_bm_write_hook = gw_write_hook;
+
+    /* Leg 1: the on-chip table, AGP_BASE 0. */
+    tbl = (uint32_t *) (ram + GW_TABLE);
+    memset(ram + GW_TABLE, 0, 0x8000);
+    tbl[RING_CARD_ADDR >> 12]         = RING_PHYS;
+    tbl[(GW_DST & 0x01ffffffu) >> 12] = GW_PHYS;
+    memset(ram + GW_PHYS, 0, 0x1000);
+    n = gw_ring((uint32_t *) (ram + RING_PHYS));
+    gart_table_on(dev, GW_TABLE);
+    wr(dev, RAGE128_AGP_BASE, 0);
+    atomic_store(&gw_lo, (int) GW_PHYS);
+    atomic_store(&gw_calls, 0);
+    atomic_store(&gw_cce_calls, 0);
+    gw_kick(dev, n);
+    drain_sync(dev);
+    calls[0] = atomic_load(&gw_calls);
+    cce[0]   = atomic_load(&gw_cce_calls);
+    px[0]    = *(uint32_t *) (ram + GW_PHYS + 15 * 4);
+    wr(dev, RAGE128_PM4_BUFFER_CNTL, 0);
+    wr(dev, RAGE128_PCI_GART_PAGE, 1);
+
+    /* Leg 2: the chipset aperture. The harness's bus-master path maps
+       bus addresses to guest memory one to one, so the ring and the
+       destination sit at AGP_BASE plus their low 25 bits. */
+    memset(ram + GW_APER + (GW_DST & 0x01ffffffu), 0, 0x1000);
+    n = gw_ring((uint32_t *) (ram + GW_APER + RING_CARD_ADDR));
+    wr(dev, RAGE128_AGP_BASE, GW_APER);
+    atomic_store(&gw_lo, (int) (GW_APER + (GW_DST & 0x01ffffffu)));
+    atomic_store(&gw_calls, 0);
+    atomic_store(&gw_cce_calls, 0);
+    gw_kick(dev, n);
+    drain_sync(dev);
+    calls[1] = atomic_load(&gw_calls);
+    cce[1]   = atomic_load(&gw_cce_calls);
+    px[1]    = *(uint32_t *) (ram + GW_APER + (GW_DST & 0x01ffffffu) + 15 * 4);
+    wr(dev, RAGE128_PM4_BUFFER_CNTL, 0);
+    wr(dev, RAGE128_AGP_BASE, 0);
+
+    harness_bm_write_hook = hook_save;
+    pci_wr8(0x04, pci_cmd_save);
+    printf("gart wb: data: table leg calls=%d on-executor=%d pixel=%08x; aperture leg calls=%d "
+           "on-executor=%d pixel=%08x\n", calls[0], cce[0], px[0], calls[1], cce[1], px[1]);
+    check_true("gart wb: table-direct write-back reaches the bus write path",
+               calls[0] >= 1 && px[0] == GW_FILL);
+    check_true("gart wb: no guest-RAM write from the packet thread",
+               calls[0] >= 1 && cce[0] == 0);
+    check_true("gart wb: aperture write-back made off the packet thread",
+               calls[1] >= 1 && cce[1] == 0 && px[1] == GW_FILL);
+    check_true("gart wb: no stray bus-master access", harness_sysmem_stray == 0);
+}
+
+/* ------------------------------------------------------------------ */
+/* The executor waits for the CPU thread to make a write-back it has  */
+/* handed over. A reset pulse and the device's close must both end    */
+/* that wait without a hang. Each leg holds the executor in the hand- */
+/* off hook until this thread has written PM4_BUFFER_DL_WPTR, then    */
+/* lets it post and watches the post appear in the device state,      */
+/* reading no register meanwhile: a register read answers the post.   */
+/* The reset pulse answers it before it parks the executor, so the    */
+/* fill is in guest memory when the pulse returns. The close takes    */
+/* the post back unanswered: the fill is dropped, as the device       */
+/* reports. The legs run on the PCI board, which selects the on-chip  */
+/* table by PCI_GART_PAGE alone. Every wait gives up after 2 s and    */
+/* fails the row that names it.                                       */
+/* ------------------------------------------------------------------ */
+static atomic_int gh_state; /* 0 off, 1 armed, 2 holding, 3 let go */
+
+static void
+gh_hook(rage128_t *dev, struct rage128_span_stage *st)
+{
+    int expect = 1;
+
+    (void) dev;
+    (void) st;
+    if (!atomic_compare_exchange_strong(&gh_state, &expect, 2))
+        return;
+    for (int ms = 0; ms < 2000 && atomic_load(&gh_state) == 2; ms++)
+        lap_msleep(1);
+}
+
+/* Submit the fill and bring the executor to a posted, unanswered
+   hand-off. Returns 1 once the post is visible. */
+static int
+gh_post(rage128_t *dev)
+{
+    uint32_t *tbl = (uint32_t *) (ram + GW_TABLE);
+    int       n, ms;
+
+    memset(ram + GW_TABLE, 0, 0x8000);
+    tbl[RING_CARD_ADDR >> 12]         = RING_PHYS;
+    tbl[(GW_DST & 0x01ffffffu) >> 12] = GW_PHYS;
+    memset(ram + GW_PHYS, 0, 0x1000);
+    n = gw_ring((uint32_t *) (ram + RING_PHYS));
+    wr(dev, RAGE128_PCI_GART_PAGE, GW_TABLE);
+    atomic_store(&gh_state, 1);
+    atomic_store(&rage128_harness_wb_hook, gh_hook);
+    gw_kick(dev, n);
+    for (ms = 0; ms < 2000 && atomic_load(&gh_state) != 2; ms++)
+        lap_msleep(1);
+    atomic_store(&gh_state, 3);
+    for (ms = 0; ms < 2000 && !atomic_load(&dev->cce_wb_req); ms++)
+        lap_msleep(1);
+    atomic_store(&rage128_harness_wb_hook, NULL);
+    return atomic_load(&dev->cce_wb_req) != NULL;
+}
+
+/* A table entry that points at no memory: past the end of guest RAM in
+   this harness, standing for a page that resolves to a device, such as
+   this card's own register window. The hook plays the device: the first
+   write it sees there, on the thread that serves the hand-off, writes a
+   register that drains the engine, as a write landing in the register
+   window would. */
+#define GW_NOMEM 0x00f00000u
+static rage128_t *gw_dev;
+static atomic_int gw_reg_writes;
+
+static void
+gw_nomem_hook(uint32_t addr, uint32_t len)
+{
+    (void) len;
+    if (addr < GW_NOMEM || addr >= GW_NOMEM + 0x1000u || rage128_on_cce_thread
+        || atomic_fetch_add(&gw_reg_writes, 1))
+        return;
+    wr(gw_dev, RAGE128_DP_SRC_FRGD_CLR, 0x00abcdefu);
+}
+
+static void
+run_gart_wb_handoff(void)
+{
+    rage128_t *dev;
+    uint32_t   pix;
+    int        posted;
+
+    harness_cfg_memory_mb = 32;
+    harness_ram_alloc();
+    dev = rage128_init(&ati_xpert128_pci_device);
+    pci_wr8(0x04, 0x07);
+    wr(dev, RAGE128_BUS_CNTL, rd(dev, RAGE128_BUS_CNTL) & ~RAGE128_BUS_CNTL_BUS_MASTER_DIS);
+    wr(dev, 0x16e8, 0x1fff1fff); /* DEFAULT_SC_BOTTOM_RIGHT */
+    wr(dev, 0x1660, 0x00000000); /* AUX_SC_CNTL off */
+
+    /* Reset pulse while the executor waits. */
+    posted = gh_post(dev);
+    pix    = *(uint32_t *) (ram + GW_PHYS + 15 * 4);
+    check_true("gart wb handoff: control: executor posted, fill not in guest memory",
+               posted && pix == 0);
+    wr(dev, RAGE128_GEN_RESET_CNTL, RAGE128_GEN_SOFT_RESET_GUI);
+    wr(dev, RAGE128_GEN_RESET_CNTL, 0);
+    check32("gart wb handoff: reset pulse answers the post, fill in guest memory",
+            *(uint32_t *) (ram + GW_PHYS + 15 * 4), GW_FILL);
+    check_true("gart wb handoff: nothing posted or staged after the pulse",
+               atomic_load(&dev->cce_wb_req) == NULL && !dev->s2d_dst.active);
+    wr(dev, RAGE128_PM4_BUFFER_CNTL, 0);
+    drain_sync(dev);
+
+    /* A write-back whose page resolves to a device rather than memory:
+       the device's handler waits for the engine, which waits for the
+       write-back. The run has to come back, with the register written. */
+    {
+        void    (*hook_save)(uint32_t addr, uint32_t len) = harness_bm_write_hook;
+        uint32_t *tbl  = (uint32_t *) (ram + GW_TABLE);
+        uint64_t  stray = harness_sysmem_stray;
+        int       n;
+
+        tbl[(GW_DST & 0x01ffffffu) >> 12] = GW_NOMEM;
+        n                                 = gw_ring((uint32_t *) (ram + RING_PHYS));
+        gw_dev                            = dev;
+        atomic_store(&gw_reg_writes, 0);
+        harness_bm_write_hook = gw_nomem_hook;
+        gw_kick(dev, n);
+        drain_sync(dev);
+        harness_bm_write_hook = hook_save;
+        harness_sysmem_stray  = stray;
+        check_true("gart wb handoff: a write-back into the device's registers returns, register written",
+                   atomic_load(&gw_reg_writes) >= 1
+                       && rd(dev, RAGE128_DP_SRC_FRGD_CLR) == 0x00abcdefu);
+        wr(dev, RAGE128_PM4_BUFFER_CNTL, 0);
+        drain_sync(dev);
+    }
+
+    /* The same two write-backs with no memory for the copy the CPU
+       thread makes of the changed bytes. The staging cannot be written
+       in place while the executor waits, since a write into the device's
+       registers would then wait for the executor, so the write-back is
+       dropped, as the device reports, and the executor goes on. First
+       the page that resolves to the device: the run has to come back
+       with the device never written. Then an ordinary page: dropped
+       too, nothing reaches guest memory. */
+    {
+        void    (*hook_save)(uint32_t addr, uint32_t len) = harness_bm_write_hook;
+        uint32_t *tbl  = (uint32_t *) (ram + GW_TABLE);
+        uint64_t  stray = harness_sysmem_stray;
+        int       n;
+
+        wr(dev, RAGE128_DP_SRC_FRGD_CLR, 0);
+        tbl[(GW_DST & 0x01ffffffu) >> 12] = GW_NOMEM;
+        n                                 = gw_ring((uint32_t *) (ram + RING_PHYS));
+        gw_dev                            = dev;
+        atomic_store(&gw_reg_writes, 0);
+        harness_bm_write_hook = gw_nomem_hook;
+        atomic_store(&rage128_harness_take_nomem, 1);
+        harness_log_tail_reset();
+        gw_kick(dev, n);
+        drain_sync(dev);
+        harness_bm_write_hook = hook_save;
+        harness_sysmem_stray  = stray;
+        check_true("gart wb nomem: a write-back toward the device's registers returns, device not written",
+                   atomic_load(&gw_reg_writes) == 0 && rd(dev, RAGE128_DP_SRC_FRGD_CLR) == 0);
+        check_log("gart wb nomem: the dropped write-back is reported",
+                  "write-back lost: vm=02070000 len=64 (no memory for the copy)", 1);
+        wr(dev, RAGE128_PM4_BUFFER_CNTL, 0);
+        drain_sync(dev);
+
+        tbl[(GW_DST & 0x01ffffffu) >> 12] = GW_PHYS;
+        memset(ram + GW_PHYS, 0, 0x1000);
+        n = gw_ring((uint32_t *) (ram + RING_PHYS));
+        harness_log_tail_reset();
+        gw_kick(dev, n);
+        drain_sync(dev);
+        check_true("gart wb nomem: a write-back to guest memory is dropped, nothing posted or staged",
+                   *(uint32_t *) (ram + GW_PHYS + 15 * 4) == 0
+                       && atomic_load(&dev->cce_wb_req) == NULL && !dev->s2d_dst.active);
+        check_log("gart wb nomem: the dropped guest-memory write-back is reported",
+                  "write-back lost: vm=02070000 len=64 (no memory for the copy)", 1);
+        atomic_store(&rage128_harness_take_nomem, 0);
+        wr(dev, RAGE128_PM4_BUFFER_CNTL, 0);
+        drain_sync(dev);
+    }
+
+    /* Close while the executor waits: the post is taken back. */
+    posted = gh_post(dev);
+    check_true("gart wb handoff: control: executor posted before the close", posted);
+    close_dev(dev);
+    check32("gart wb handoff: close drops the unanswered write-back",
+            *(uint32_t *) (ram + GW_PHYS + 15 * 4), 0);
 }
 
 /* ------------------------------------------------------------------ */
@@ -9498,15 +9939,16 @@ vectors_ck_aen(rage128_t *dev)
 #undef CK_PX
 
 /* ------------------------------------------------------------------ */
-/* A tiled color/Z target reaches the GPU kernel through tile-column
-   spans. The kernel addresses each span as row base + x * bytes per
-   pixel; these vectors check the host-side state gate and span capture
-   that supply those bases (gpu_probe.c). */
+/* A tiled color/Z target reaches the GPU kernel as whole-row spans. The
+   kernel addresses a pixel of a tiled span as row base + the tile column
+   offset of x * bytes per pixel (row_xoff in the seg kernel); these
+   vectors check the host-side state gate and span capture that supply
+   those bases and flags (gpu_probe.c). */
 /*                                                                     */
 /* Four properties, one per moving part, so a regression names itself: */
 /*   gate      -- the tiled state reaches a kernel at all              */
-/*   addresses -- every span's (base + x * bpp) is the tiled byte      */
-/*   bound     -- the accept reservation covers the split's spans      */
+/*   addresses -- every span's base plus the tile offset is the byte  */
+/*   bound     -- the accept reservation covers the whole-row spans   */
 /*   ranges    -- the hazard interval covers every byte they write     */
 /* ------------------------------------------------------------------ */
 #define GT_SPANS 1024u
@@ -9531,7 +9973,7 @@ gt_capture_leg(rage128_t *dev, const rage128_raster_state_t *rs,
 
     /* Right triangle: the top row covers the full width (4 color tile
        columns, 2 Z columns) and each row below ends one pixel earlier, so
-       the last piece of a row is a partial one. */
+       most rows end partway through a tile column. */
     memset(v, 0, sizeof(v));
     for (int k = 0; k < 3; k++) {
         v[k].z       = 0.25f;
@@ -9553,8 +9995,9 @@ gt_capture_leg(rage128_t *dev, const rage128_raster_state_t *rs,
         /* the whole contract: the address the kernel forms from this
            record is the byte the tile transform names */
         for (int e = 0; e < 2; e++) {
-            uint32_t ca = (sp[i].drow + (uint32_t) xs[e] * 4u) & mask;
-            uint32_t za = (sp[i].zrow + (uint32_t) xs[e] * 2u) & mask;
+            uint32_t cx = (uint32_t) xs[e] * 4u, zx = (uint32_t) xs[e] * 2u;
+            uint32_t ca = (sp[i].drow + (sp[i].ctiled ? r128_tile_x(cx) : cx)) & mask;
+            uint32_t za = (sp[i].zrow + (sp[i].ztiled ? r128_tile_x(zx) : zx)) & mask;
 
             if (ca != ((HZ_A + tl_off((uint32_t) xs[e] * 4u,
                                       (uint32_t) sp[i].py, 256)) & mask))
@@ -9567,8 +10010,8 @@ gt_capture_leg(rage128_t *dev, const rage128_raster_state_t *rs,
             if (za < blo) blo = za;
             if (za + 2u > bhi) bhi = za + 2u;
         }
-        /* pieces of one row must partition its covered range: in x order,
-           adjacent, no gap and no overlap */
+        /* the spans of one row must partition its covered range: in x
+           order, adjacent, no gap and no overlap */
         if (sp[i].py == prev_py) {
             if (sp[i].x0 != prev_x1 + 1)
                 bad_seq++;
@@ -9577,8 +10020,8 @@ gt_capture_leg(rage128_t *dev, const rage128_raster_state_t *rs,
         if (sp[i].x1 < sp[i].x0)
             bad_seq++;
         /* past color tile column 0, where the x transform is the identity
-           and a rebase bug is invisible */
-        if ((uint32_t) sp[i].x0 * 4u >= 64u)
+           and a wrong transform is invisible */
+        if ((uint32_t) sp[i].x1 * 4u >= 64u)
             crossed++;
         prev_py = sp[i].py;
         prev_x1 = sp[i].x1;
@@ -9587,13 +10030,12 @@ gt_capture_leg(rage128_t *dev, const rage128_raster_state_t *rs,
     check32(nm, bad_c, 0);
     snprintf(nm, sizeof(nm), "gpu: %s span address is the tiled Z cell", leg);
     check32(nm, bad_z, 0);
-    snprintf(nm, sizeof(nm), "gpu: %s row pieces partition the range", leg);
+    snprintf(nm, sizeof(nm), "gpu: %s row spans partition the range", leg);
     check32(nm, bad_seq, 0);
     snprintf(nm, sizeof(nm), "gpu: %s spans reach past tile column 0", leg);
     check_true(nm, crossed > 0);
-    /* the split emits far more, finer spans than a linear row would; the
-       accept bound is what reserves them, and a capture that runs past it
-       drops the pixels it could not record */
+    /* the accept bound is what reserves the spans, and a capture that
+       runs past it drops the pixels it could not record */
     snprintf(nm, sizeof(nm), "gpu: %s accept bound covers the spans", leg);
     check_true(nm, cap.need_spans >= cap.nspans);
     snprintf(nm, sizeof(nm), "gpu: %s hazard range covers color writes", leg);
@@ -9681,20 +10123,18 @@ vectors_zfx_helpers(void)
 }
 
 /* Seeds of rows whose coverage starts and ends inside the triangle's
-   bounding box. The tiled row walk does not call the capture on the
-   tile-column pieces left of a row's covered columns, but each piece's
-   depth seed must still account for the columns before it, and the walk
-   stops after the piece holding the last covered column. The reference
+   bounding box. The capture takes a tiled row whole, like a linear one,
+   and clips it to its covered columns itself, so each span's seeds must
+   account for the columns left of its first covered one. The reference
    is the same triangle on a linear target: one span per row (the target
    is narrower than a 256-px chunk), seeded by the capture's own clip
-   walk. Every tiled piece of that row must then (a) partition the linear
-   span's columns exactly, (b) carry the linear edge values stepped by
-   k * step, and (c) carry the linear fixed-point depth seed plus k times
-   the per-pixel step. All three are exact integer math, so the values
-   must be equal. A walk that seeded a piece without the k columns before
-   it fails (c); one that stopped early fails (a). A walk that
-   still called the empty pieces would pass: the capture emits nothing
-   for them, so only a call count (not a span record) can see it. */
+   walk. The spans of that row on the tiled target must then (a)
+   partition the linear span's columns exactly, (b) carry the linear
+   edge values stepped by k * step, and (c) carry the linear fixed-point
+   depth seed plus k times the per-pixel step. All three are exact
+   integer math, so the values must be equal. A capture that seeded a
+   span without the k columns before it fails (c); one that dropped or
+   added columns fails (a). */
 static void
 gt_seed_leg(rage128_t *dev, const rage128_raster_state_t *trs,
             const rage128_raster_state_t *lrs)
@@ -9736,9 +10176,9 @@ gt_seed_leg(rage128_t *dev, const rage128_raster_state_t *trs,
         int32_t                   next = L->x0;
 
         if (L->x0 >= 16)
-            skipped++; /* at least one uncalled piece left of coverage */
+            skipped++; /* covered columns start past the first color tile column */
         if (L->x1 < 48)
-            stopped++; /* at least one piece right of it never walked */
+            stopped++; /* ... and end before the last one */
         for (; ti < tc.got && ts[ti].py == L->py; ti++) {
             const harness_gpu_span_t *P = &ts[ti];
             int64_t                   k = (int64_t) P->x0 - L->x0;
@@ -9746,7 +10186,7 @@ gt_seed_leg(rage128_t *dev, const rage128_raster_state_t *trs,
             if (P->x0 != next || P->x1 < P->x0 || P->x1 > L->x1)
                 bad_part++;
             next = P->x1 + 1;
-            /* the walked seeds of every tiled piece step from the linear
+            /* the walked seeds of every tiled span step from the linear
                row's, and the plane seeds reproduce the walk on both */
             if (P->w_e0 != L->w_e0 + k * tc.edx[0]
                 || P->w_e1 != L->w_e1 + k * tc.edx[1]
@@ -9764,11 +10204,11 @@ gt_seed_leg(rage128_t *dev, const rage128_raster_state_t *trs,
     if (ti != tc.got)
         bad_part++; /* a tiled row the linear capture does not have */
 
-    check_true("gpu tiled seeds: inset leg has rows covered right of an empty piece",
+    check_true("gpu tiled seeds: inset leg has rows covered right of an empty tile column",
                skipped > 0);
-    check_true("gpu tiled seeds: inset leg has rows covered left of an empty piece",
+    check_true("gpu tiled seeds: inset leg has rows covered left of an empty tile column",
                stopped > 0);
-    check32("gpu tiled seeds: inset tiled pieces partition the linear row exactly",
+    check32("gpu tiled seeds: inset tiled spans partition the linear row exactly",
             bad_part, 0);
     check32("gpu tiled seeds: inset tiled edge seeds equal the linear ones stepped",
             bad_e, 0);
@@ -9790,8 +10230,9 @@ vectors_gpu_tiled(rage128_t *dev)
 
     /* 64x64 context: tiled ARGB8888 dst at HZ_A (256 B rows) and tiled
        16-bit Z at HZ_Z (128 B rows), both transforms live at once. The
-       two tile columns are 16 px (color) and 32 px (Z) wide, so the row
-       walk has to split on the finer of the two and stay right on both. */
+       two tile columns are 16 px (color) and 32 px (Z) wide, so a row
+       crosses both kinds of column edge, and each surface's span base and
+       tile flag must name the right bytes on both sides of each edge. */
     wr(dev, 0x16e8, 0x1fff1fff);
     wr(dev, 0x16ec, 0x00000000);
     wr(dev, 0x16f0, 0x003f003f);
@@ -9894,11 +10335,54 @@ ra_hit(uint32_t a0, uint32_t a1, uint32_t b0, uint32_t b1, uint32_t size)
         || (at1 && bt1);
 }
 
+/* The byte runs pixels [x0, x1] of a span store at b bytes each, from
+   its row base: one run on a linear row, one per 64-byte tile column on
+   a tiled one, where the kernel adds the tile column offset per pixel.
+   Returns the run count; r0 and r1 need room for 17 runs (a 256-px
+   span at 4 bytes per pixel crosses at most 16 columns, plus one). */
+static unsigned
+ra_runs(uint32_t base, int tiled, int32_t x0, int32_t x1, uint32_t b,
+        uint32_t *r0, uint32_t *r1)
+{
+    uint32_t xb = (uint32_t) x0 * b, xe = (uint32_t) (x1 + 1) * b;
+    unsigned n  = 0;
+
+    if (!tiled) {
+        r0[0] = base + xb;
+        r1[0] = base + xe;
+        return 1;
+    }
+    while (xb < xe && n < 17u) {
+        uint32_t ce = (xb | 63u) + 1u;
+
+        if (ce > xe)
+            ce = xe;
+        r0[n] = base + r128_tile_x(xb);
+        r1[n] = r0[n] + (ce - xb);
+        n++;
+        xb = ce;
+    }
+    return n;
+}
+
+/* Whether any run of one list shares a byte with any run of the other,
+   each wrapped at the top of VRAM (ra_hit). */
+static int
+ra_runs_hit(const uint32_t *a0, const uint32_t *a1, unsigned na,
+            const uint32_t *b0, const uint32_t *b1, unsigned nb, uint32_t size)
+{
+    for (unsigned i = 0; i < na; i++)
+        for (unsigned j = 0; j < nb; j++)
+            if (ra_hit(a0[i], a1[i], b0[j], b1[j], size))
+                return 1;
+    return 0;
+}
+
 /* Capture ntri triangles (v[3k..3k+2]) into one segment and grade them.
-   Byte ranges come from the span records (row base + column * bpp),
-   computed here, not from the backend's own range shadow, and compared
-   wrapped at the top of VRAM. wide = the draw passes the pitch or the
-   top of VRAM, so its rows share bytes. */
+   Byte ranges come from the span records (row base plus each pixel's
+   column offset, ra_runs), computed here, not from the backend's own
+   range shadow, and compared wrapped at the top of VRAM. wide = the
+   draw passes the pitch or the top of VRAM, so its rows share bytes. */
 static void
 ra_grade(rage128_t *dev, const char *leg, const rage128_raster_state_t *rs,
          const r3d_vtx_t *v, uint32_t ntri, int wide)
@@ -9920,44 +10404,44 @@ ra_grade(rage128_t *dev, const char *leg, const rage128_raster_state_t *rs,
     if (!ran)
         return; /* nothing below can be graded on a missing or cut capture */
     for (uint32_t i = 0; i < cap.got; i++) {
-        uint32_t a0 = sp[i].drow + (uint32_t) sp[i].x0 * 4u;
-        uint32_t a1 = sp[i].drow + (uint32_t) (sp[i].x1 + 1) * 4u;
+        uint32_t a0[17], a1[17], b0[17], b1[17];
+        unsigned na = ra_runs(sp[i].drow, sp[i].ctiled, sp[i].x0, sp[i].x1, 4u, a0, a1);
+        unsigned nb = zon ? ra_runs(sp[i].zrow, sp[i].ztiled, sp[i].x0, sp[i].x1,
+                                    zbpp, b0, b1)
+                          : 0;
 
         /* coverage: a span wrapped at the top of VRAM needs the whole
            card, which is how the backend folds such a range */
-        if (a1 > size) {
-            clo = 0;
-            chi = size;
+        for (unsigned k = 0; k < na; k++) {
+            if (a1[k] > size) {
+                clo = 0;
+                chi = size;
+            }
+            if (a0[k] < clo)
+                clo = a0[k];
+            if (a1[k] > chi && a1[k] <= size)
+                chi = a1[k];
         }
-        if (a0 < clo)
-            clo = a0;
-        if (a1 > chi && a1 <= size)
-            chi = a1;
-        if (zon) {
-            uint32_t b0 = sp[i].zrow + (uint32_t) sp[i].x0 * zbpp;
-            uint32_t b1 = sp[i].zrow + (uint32_t) (sp[i].x1 + 1) * zbpp;
-
-            if (b1 > size) {
+        for (unsigned k = 0; k < nb; k++) {
+            if (b1[k] > size) {
                 zlo = 0;
                 zhi = size;
             }
-            if (b0 < zlo)
-                zlo = b0;
-            if (b1 > zhi && b1 <= size)
-                zhi = b1;
+            if (b0[k] < zlo)
+                zlo = b0[k];
+            if (b1[k] > zhi && b1[k] <= size)
+                zhi = b1[k];
         }
         for (uint32_t j = 0; j < i; j++) {
-            uint32_t c0 = sp[j].drow + (uint32_t) sp[j].x0 * 4u;
-            uint32_t c1 = sp[j].drow + (uint32_t) (sp[j].x1 + 1) * 4u;
-            int      ov = ra_hit(a0, a1, c0, c1, size);
+            uint32_t c0[17], c1[17], d0[17], d1[17];
+            unsigned nc = ra_runs(sp[j].drow, sp[j].ctiled, sp[j].x0, sp[j].x1, 4u, c0, c1);
+            int      ov = ra_runs_hit(a0, a1, na, c0, c1, nc, size);
 
             if (zon) {
-                uint32_t d0 = sp[j].zrow + (uint32_t) sp[j].x0 * zbpp;
-                uint32_t d1 = sp[j].zrow + (uint32_t) (sp[j].x1 + 1) * zbpp;
-                uint32_t b0 = sp[i].zrow + (uint32_t) sp[i].x0 * zbpp;
-                uint32_t b1 = sp[i].zrow + (uint32_t) (sp[i].x1 + 1) * zbpp;
+                unsigned nd = ra_runs(sp[j].zrow, sp[j].ztiled, sp[j].x0, sp[j].x1,
+                                      zbpp, d0, d1);
 
-                ov |= ra_hit(b0, b1, d0, d1, size);
+                ov |= ra_runs_hit(b0, b1, nb, d0, d1, nd, size);
             }
             if (!ov)
                 continue;
@@ -10438,13 +10922,14 @@ vectors_gpu_stencil_class(rage128_t *dev)
 }
 
 /* ------------------------------------------------------------------ */
-/* Two-tier accept pricing. The bbox bound charges every row at full   */
-/* bbox width; a tiled Z multiplies that by its per-row piece count,   */
-/* so a fullscreen-bbox triangle at 1280x1024x32 prices 83106 spans    */
-/* against a 65536 cap while its real spans fit easily. A cap trip     */
-/* must therefore re-price exactly (count-only walk of the production  */
-/* rasterizer) and accept; only a draw over cap on the exact count     */
-/* still rejects. Driven through the production submit entry.          */
+/* Two-tier accept pricing. The bbox bound charges every row of the    */
+/* vertices' bounding box at its full width, before the scissor clips  */
+/* it, so a triangle whose vertices reach far past a 1280x1024 scissor */
+/* prices over the 65536-span cap while its real spans fit easily. A   */
+/* cap trip must therefore re-price exactly (count-only walk of the    */
+/* production rasterizer) and accept; only a draw over cap on the      */
+/* exact count still rejects. Driven through the production submit     */
+/* entry.                                                              */
 /* ------------------------------------------------------------------ */
 #define RP_A 0x00800000u /* color target, 1280 px ARGB8888 = 5120 B/row */
 #define RP_Z 0x01000000u /* 32-bit tiled Z, 1280 px = 5120 B/row         */
@@ -10495,25 +10980,27 @@ vectors_gpu_reprice(rage128_t *dev)
         v[k].diffuse = 0xff204060;
     }
 
-    /* Sliver with a fullscreen bbox: the first live 3DMark99 hit,
-       verbatim (area ~8k px, priced 83106 spans / 1298916 px). */
-    v[0].x = 1263.5f; v[0].y = 0.0f;
-    v[1].x = 15.5f;   v[1].y = 1023.5f;
-    v[2].x = 0.0f;    v[2].y = 1023.5f;
+    /* Sliver whose bounding box runs past the scissor: 4003 rows of
+       18 chunks price 72054 spans; inside the scissor it covers a few
+       pixels of each row, along the diagonal from the top left. */
+    v[0].x = 0.0f;    v[0].y = 0.0f;
+    v[1].x = 15.5f;   v[1].y = 0.0f;
+    v[2].x = 4500.0f; v[2].y = 4000.0f;
     check_true("gpu: sliver probe ran",
                harness_gpu_submit_probe(dev, &rs, &v[0], &v[1], &v[2], &sub));
     check_true("gpu: bbox bound prices the sliver past the span cap",
-               sub.bound_spans > 65536u && sub.bound_px <= (8u << 20));
+               sub.bound_spans > 65536u && sub.bound_px <= (32u << 20));
     check32("gpu: sliver re-priced exactly once", (uint32_t) sub.reprice, 1);
     check32("gpu: sliver accepted, not toobig", (uint32_t) sub.toobig, 0);
     check_true("gpu: sliver capture consumed the exact re-price",
                sub.accepted == 1 && sub.miss == 0 && sub.nspans > 0);
     check_true("gpu: sliver exact spans fit the arena", sub.nspans <= 65536u);
 
-    /* Fullscreen half-quad (area ~647k px): the widest real shape, the
-       one that leans on the arena hardest -- must still fit exactly. */
-    v[0].x = 1263.5f; v[0].y = 0.0f;
-    v[1].x = 0.0f;    v[1].y = 1023.5f;
+    /* Half-quad with the same bounding box: inside the scissor it
+       covers every row in full, the shape that leans on the arena
+       hardest -- must still fit exactly. */
+    v[0].x = 4500.0f; v[0].y = 0.0f;
+    v[1].x = 0.0f;    v[1].y = 4000.0f;
     v[2].x = 0.0f;    v[2].y = 0.0f;
     check_true("gpu: half-quad probe ran",
                harness_gpu_submit_probe(dev, &rs, &v[0], &v[1], &v[2], &sub));
@@ -10524,19 +11011,50 @@ vectors_gpu_reprice(rage128_t *dev)
                sub.miss == 0 && sub.nspans > 0 && sub.nspans <= 65536u);
 
     /* Genuinely huge triangle: scissor opened wide, ~33M covered px.
-       The exact count must agree with the bbox bound here and keep the
-       reject -- the cap still protects the arena. */
+       The snap holds a vertex to 4096 pixels from the origin at this
+       subpixel precision, so the window offset (4096, 4096) moves the
+       triangle out to (0, 0), (8191, 0), (0, 8191). Its exact count,
+       about 135k spans, must keep the reject -- the cap still protects
+       the arena. */
     wr(dev, 0x16f0, 0x1fff1fff);
+    wr(dev, RAGE128_WINDOW_XY_OFFSET, 0x40004000u);
     rage128_raster_state_capture(dev, &rs);
-    v[0].x = 0.0f;    v[0].y = 0.0f;
-    v[1].x = 8191.0f; v[1].y = 0.0f;
-    v[2].x = 0.0f;    v[2].y = 8191.0f;
+    v[0].x = -4096.0f; v[0].y = -4096.0f;
+    v[1].x = 4095.0f;  v[1].y = -4096.0f;
+    v[2].x = -4096.0f; v[2].y = 4095.0f;
     check_true("gpu: monster probe ran",
                harness_gpu_submit_probe(dev, &rs, &v[0], &v[1], &v[2], &sub));
     check_true("gpu: monster still rejects after exact re-price",
                sub.reprice == 1 && sub.toobig == 1 && sub.accepted == 0
                    && sub.nspans == 0);
 
+    wr(dev, RAGE128_WINDOW_XY_OFFSET, 0x00000000);
+
+    /* A tiled draw that stores over its own Z: the Z surface moved onto
+       the color surface, so color and Z ranges overlap and the draw can
+       only run as a serial run, which takes at most 16384 pixels. Its
+       bounding box (1266 x 1026 px) is far over that, but it covers
+       about 8k pixels. Its tile-column count (83106 spans) passes the
+       span cap, so it is re-priced exactly, and the exact pixel count
+       lets it take the serial run instead of the CPU path. */
+    wr(dev, 0x16f0, 0x03ff04ff);
+    wr(dev, RAGE128_Z_OFFSET_C, RP_A);
+    rage128_raster_state_capture(dev, &rs);
+    {
+        harness_gpu_alias_t al;
+
+        v[0].x = 1263.5f; v[0].y = 0.0f;
+        v[1].x = 15.5f;   v[1].y = 1023.5f;
+        v[2].x = 0.0f;    v[2].y = 1023.5f;
+        check_true("gpu: aliasing tiled sliver probe ran",
+                   harness_gpu_alias_probe(dev, &rs, &v[0], &v[1], &v[2], &al));
+        check_true("gpu: aliasing tiled sliver's box is over the serial cap",
+                   al.need_px > 16384u);
+        check_true("gpu: aliasing tiled sliver runs as a GPU serial run",
+                   al.accepted == 1 && al.serial == 1 && al.ser[0] == 1
+                       && al.rej[0] == 0 && al.rej[1] == 0);
+    }
+    wr(dev, RAGE128_Z_OFFSET_C, RP_Z);
     wr(dev, RAGE128_TEX_CNTL_C, 0x00000000);
     wr(dev, RAGE128_Z_PITCH_C, 0x000000a0u);
     wr(dev, 0x16f0, 0x003f003f);
@@ -14709,6 +15227,8 @@ vectors_load_palette(rage128_t *dev)
     check32("3d: 256-entry load, entry 16", dev->scl_palette[16], 0x00112233u);
 }
 
+static void vectors_bar0_bus_time(rage128_t *dev, const char *board, int is_agp, double scale);
+
 static void
 run_agp_32mb(void)
 {
@@ -14722,6 +15242,7 @@ run_agp_32mb(void)
     vectors_apertures(dev);
     vectors_aper_endian(dev);
     vectors_agp_image(dev);
+    vectors_bar0_bus_time(dev, "AGP board", 1, 8.0);
     vectors_zfx_helpers();
     vectors_dac_mask(dev);
     vectors_dpms(dev);
@@ -14755,6 +15276,7 @@ run_agp_32mb(void)
     vectors_dp_mix_datatype(dev);
     vectors_standalone_2d(dev);
     vectors_agp_straddle(dev);
+    vectors_gart_writeback_thread(dev);
     vectors_dst_traj_tile(dev);
     vectors_dst_coord_wrap(dev);
     vectors_gui_reset_hostdata(dev);
@@ -14786,6 +15308,7 @@ run_agp_32mb(void)
     vectors_gen_prim_count(dev);
     vectors_cce_gen_int(dev);
     vectors_cce_display(dev);
+    vectors_cce_config_cntl(dev);
     vectors_bm_chunk_tap(dev);
     vectors_modeset_tap(dev);
     vectors_early_arms(dev);
@@ -14824,6 +15347,118 @@ run_agp_16mb(void)
 }
 
 /* The PCI board (ATI Xpert 128): GART selection without an aperture. */
+/* ------------------------------------------------------------------ */
+/* Bus time of a CPU access through BAR0. The board's timing table is  */
+/* scaled as the core's video_update_timing does it, at the bus factor */
+/* of a Celeron 533 on a 66 MHz host bus (AGP 8, PCI 16 CPU cycles per */
+/* bus clock), and one access through each handler must take exactly   */
+/* the scaled count from cycles: writes and reads, every width, a      */
+/* split write byte by byte, the swapped views and the AGP image half. */
+/* ------------------------------------------------------------------ */
+static int
+bt_delta_w(void (*fn)(uint32_t, uint32_t, void *), uint32_t addr, uint32_t val,
+           rage128_t *dev)
+{
+    int before = cycles;
+
+    fn(addr, val, dev);
+    return before - cycles;
+}
+
+static void bt_wb(uint32_t a, uint32_t v, void *p) { rage128_lfb_writeb(a, (uint8_t) v, p); }
+static void bt_ww(uint32_t a, uint32_t v, void *p) { rage128_lfb_writew(a, (uint16_t) v, p); }
+static void bt_wl(uint32_t a, uint32_t v, void *p) { rage128_lfb_writel(a, v, p); }
+static void bt_wl_sw16(uint32_t a, uint32_t v, void *p) { rage128_lfb_writel_sw16(a, v, p); }
+static void bt_wl_sw32(uint32_t a, uint32_t v, void *p) { rage128_lfb_writel_sw32(a, v, p); }
+static void bt_agp_wl(uint32_t a, uint32_t v, void *p) { rage128_agp_writel(a, v, p); }
+static void bt_agp_only(rage128_t *dev, const char *board, uint32_t ap, int wb, int ww, int wl, int rl);
+
+static void
+vectors_bar0_bus_time(rage128_t *dev, const char *board, int is_agp, double scale)
+{
+    monitor_t             *mon = dev->svga.monitor;
+    const video_timings_t *t   = mon->mon_vid_timings;
+    uint32_t               ap  = dev->lfb_base + 0x00300000u;
+    int                    wb, ww, wl, rb, rw, rl, before;
+    char                   name[160];
+
+    snprintf(name, sizeof(name), "bus time: %s declares its own bus's timing table", board);
+    check_true(name, t == (is_agp ? &timing_rage128_agp : &timing_rage128));
+    if (!t)
+        return;
+    mon->mon_video_timing_write_b = wb = (int) (scale * t->write_b);
+    mon->mon_video_timing_write_w = ww = (int) (scale * t->write_w);
+    mon->mon_video_timing_write_l = wl = (int) (scale * t->write_l);
+    mon->mon_video_timing_read_b  = rb = (int) (scale * t->read_b);
+    mon->mon_video_timing_read_w  = rw = (int) (scale * t->read_w);
+    mon->mon_video_timing_read_l  = rl = (int) (scale * t->read_l);
+    wr(dev, 0x0b0c, 0); /* SURFACE0_INFO: no window */
+
+    snprintf(name, sizeof(name), "bus time: %s byte write charges write_b", board);
+    check32(name, (uint32_t) bt_delta_w(bt_wb, ap, 0x11, dev), (uint32_t) wb);
+    snprintf(name, sizeof(name), "bus time: %s word write charges write_w", board);
+    check32(name, (uint32_t) bt_delta_w(bt_ww, ap, 0x2211, dev), (uint32_t) ww);
+    snprintf(name, sizeof(name), "bus time: %s dword write charges write_l", board);
+    check32(name, (uint32_t) bt_delta_w(bt_wl, ap, 0x44332211u, dev), (uint32_t) wl);
+
+    /* controls: the read side, unchanged */
+    before = cycles;
+    (void) rage128_lfb_readb(ap, dev);
+    snprintf(name, sizeof(name), "bus time: %s byte read charges read_b", board);
+    check32(name, (uint32_t) (before - cycles), (uint32_t) rb);
+    before = cycles;
+    (void) rage128_lfb_readw(ap, dev);
+    snprintf(name, sizeof(name), "bus time: %s word read charges read_w", board);
+    check32(name, (uint32_t) (before - cycles), (uint32_t) rw);
+    before = cycles;
+    (void) rage128_lfb_readl(ap, dev);
+    snprintf(name, sizeof(name), "bus time: %s dword read charges read_l", board);
+    check32(name, (uint32_t) (before - cycles), (uint32_t) rl);
+
+    if (is_agp) {
+        bt_agp_only(dev, board, ap, wb, ww, wl, rl);
+    }
+    mon->mon_video_timing_write_b = mon->mon_video_timing_write_w = 0;
+    mon->mon_video_timing_write_l = 0;
+    mon->mon_video_timing_read_b = mon->mon_video_timing_read_w = 0;
+    mon->mon_video_timing_read_l = 0;
+}
+
+/* The AGP board's extra legs: split, swapped views, AGP image half. */
+static void
+bt_agp_only(rage128_t *dev, const char *board, uint32_t ap, int wb, int ww, int wl, int rl)
+{
+    int  before;
+    char name[160];
+
+    /* A dword at x62,y1 of a 1024-byte SURFACE window straddles a tile
+       column and goes out as four byte writes, each charged. */
+    wr(dev, 0x0b04, 0x00300000); /* SURFACE0_LOWER_BOUND */
+    wr(dev, 0x0b08, 0x00400000); /* SURFACE0_UPPER_BOUND */
+    wr(dev, 0x0b0c, 5);          /* SURFACE0_INFO, PITCHSEL 5 = 1024 B */
+    snprintf(name, sizeof(name), "bus time: %s split dword write charges 4 x write_b", board);
+    check32(name, (uint32_t) bt_delta_w(bt_wl, ap + 1086, 0x44332211u, dev), (uint32_t) (4 * wb));
+    snprintf(name, sizeof(name), "bus time: %s aligned dword in the window charges write_l", board);
+    check32(name, (uint32_t) bt_delta_w(bt_wl, ap + 1084, 0x44332211u, dev), (uint32_t) wl);
+    wr(dev, 0x0b0c, 0);
+
+    /* Swapped views: a 32 bpp swap of an aligned dword is one dword, a
+       16 bpp swap of a dword is two words. */
+    snprintf(name, sizeof(name), "bus time: %s 32 bpp swapped dword write charges write_l", board);
+    check32(name, (uint32_t) bt_delta_w(bt_wl_sw32, ap, 0x44332211u, dev), (uint32_t) wl);
+    snprintf(name, sizeof(name), "bus time: %s 16 bpp swapped dword write charges 2 x write_w", board);
+    check32(name, (uint32_t) bt_delta_w(bt_wl_sw16, ap, 0x44332211u, dev), (uint32_t) (2 * ww));
+
+    /* The AGP image half is reached across the same bus. */
+    snprintf(name, sizeof(name), "bus time: %s AGP image dword write charges write_l", board);
+    check32(name, (uint32_t) bt_delta_w(bt_agp_wl, dev->lfb_base + 0x02000000u + 0x00123450u,
+                                        0x01020304u, dev), (uint32_t) wl);
+    before = cycles;
+    (void) rage128_agp_readl(dev->lfb_base + 0x02000000u + 0x00123450u, dev);
+    snprintf(name, sizeof(name), "bus time: %s AGP image dword read charges read_l", board);
+    check32(name, (uint32_t) (before - cycles), (uint32_t) rl);
+}
+
 static void
 run_pci_xpert128(void)
 {
@@ -14833,6 +15468,7 @@ run_pci_xpert128(void)
     dev = rage128_init(&ati_xpert128_pci_device);
     vectors_gart_force_pci(dev);
     vectors_test_clock_pciclk(dev, "PCI", (double) cpu_pci_speed);
+    vectors_bar0_bus_time(dev, "PCI board", 0, 16.0);
     close_dev(dev);
 }
 
@@ -16435,9 +17071,10 @@ vectors_fence_order(rage128_t *dev)
 /* driver that reads the engine idle goes on to read or reuse the      */
 /* surface, so GUI_STAT, PM4_STAT and PC_GUI_CTLSTAT have to read busy */
 /* through that write-back (RRG: GUI_STAT, p. 3-244 / PDF 262). The    */
-/* bus-master write hook holds the executor at its first write into    */
-/* the two surfaces, before the bytes land, until the CPU thread has   */
-/* read the registers and lets it go. Only a device with render        */
+/* write-back hand-off hook holds the executor at its first hand-off   */
+/* of either surface, before it posts the staging to the CPU thread    */
+/* and so before the bytes land, until the CPU thread has read the     */
+/* registers and lets it go. Only a device with render                 */
 /* workers defers a draw; with one render thread the leg does not run. */
 /* The vector puts back every register, hook and guest memory byte it  */
 /* changes. The reset pulse it starts with is not undone: it drops     */
@@ -16459,22 +17096,19 @@ enum {
 };
 static atomic_int wb_state;
 
-/* Holds one write: the executor's first into color buffer A or depth
-   buffer A after the vector arms the hook. The hold lasts until the
+/* Holds one hand-off: the executor's first of the color or depth
+   staging after the vector arms the hook. The hold lasts until the
    vector releases it, however long the CPU thread takes, so host load
    cannot end it early. WB_LIMIT_MS only keeps a broken device from
    hanging the run; reaching it is recorded in wb_state and reported by
    the vector as a failure of its own. Whatever ends the hold, no later
-   write is held. */
+   hand-off is held. */
 static void
-wb_write_hook(uint32_t addr, uint32_t len)
+wb_handoff_hook(rage128_t *dev, struct rage128_span_stage *st)
 {
-    int in_col = addr >= WB_COL_PHYS && addr < WB_COL_PHYS + 0x2000u;
-    int in_z   = addr >= WB_Z_PHYS && addr < WB_Z_PHYS + 0x2000u;
     int expect = WB_ARMED;
 
-    (void) len;
-    if (!rage128_on_cce_thread || (!in_col && !in_z)
+    if (!rage128_on_cce_thread || (st != &dev->c_stage && st != &dev->z_stage)
         || !atomic_compare_exchange_strong(&wb_state, &expect, WB_HOLDING))
         return;
     for (int ms = 0; ms < WB_LIMIT_MS && atomic_load(&wb_state) == WB_HOLDING; ms++)
@@ -16503,7 +17137,6 @@ vectors_cce_status_batch_writeback(rage128_t *dev)
     };
     enum { NREGS = sizeof(regs) / sizeof(regs[0]) };
     static uint8_t ram_ib[128], ram_col[0x2000], ram_z[0x2000];
-    void         (*hook_save)(uint32_t addr, uint32_t len);
     uint32_t       reg_save[NREGS];
     uint32_t       indoff_save, indsize_save;
     uint64_t       stray_save;
@@ -16529,7 +17162,6 @@ vectors_cce_status_batch_writeback(rage128_t *dev)
     indsize_save = dev->pm4_iw_indsize;
     pci_cmd_save = pci_rd8(0x04);
     stray_save   = harness_sysmem_stray;
-    hook_save    = harness_bm_write_hook;
     memcpy(ram_ib, ib, sizeof(ram_ib));
     memcpy(ram_col, ram + WB_COL_PHYS, sizeof(ram_col));
     memcpy(ram_z, ram + WB_Z_PHYS, sizeof(ram_z));
@@ -16548,8 +17180,7 @@ vectors_cce_status_batch_writeback(rage128_t *dev)
     n       = ring_add_tri(ib, n, 0xff00ff00);
 
     /* AGP addressing through the chipset aperture, not the on-chip
-       table: the device then writes the staged surfaces back through
-       the host's bus-master write, where the hook can hold it. */
+       table. */
     pci_wr8(0x04, 0x07);
     wr(dev, RAGE128_BUS_CNTL, rd(dev, RAGE128_BUS_CNTL) & ~RAGE128_BUS_CNTL_BUS_MASTER_DIS);
     wr(dev, RAGE128_PCI_GART_PAGE, 1);
@@ -16588,11 +17219,11 @@ vectors_cce_status_batch_writeback(rage128_t *dev)
 
     if (queued) {
         /* A wake that brings no work; the executor's pass draws the
-           batch and is held at its first write-back write. The wait
+           batch and is held at its first write-back hand-off. The wait
            for it sleeps: the hold does not end until this thread ends
            it, so there is no window to miss. */
         atomic_store(&wb_state, WB_ARMED);
-        harness_bm_write_hook = wb_write_hook;
+        atomic_store(&rage128_harness_wb_hook, wb_handoff_hook);
         thread_set_event(dev->cce_wake_event);
         for (int ms = 0; ms < WB_LIMIT_MS && atomic_load(&wb_state) == WB_ARMED; ms++)
             lap_msleep(1);
@@ -16620,7 +17251,7 @@ vectors_cce_status_batch_writeback(rage128_t *dev)
     }
     rr_quiesce(dev);
     atomic_store(&wb_state, WB_OFF);
-    harness_bm_write_hook = hook_save;
+    atomic_store(&rage128_harness_wb_hook, NULL);
     stat_after            = rd(dev, RAGE128_GUI_STAT);
     pix_after             = *pix;
     stray_ok              = harness_sysmem_stray == 0;
@@ -33258,33 +33889,310 @@ run_tex_cache_store(void)
     atomic_store(&rage128_harness_store_hook, NULL);
     close_dev(dev);
 }
-/* The capture threads' grouping handshake under stress
-   (harness_gpu_group_wake): rounds sized to finish as the submit thread
-   turns from spinning to sleeping, where a completion that neither
-   signals nor is seen leaves the submit thread asleep for good. The row
-   needs rounds that reached the sleep, or it proves nothing.
-   R128_CAPWAKE_ROUNDS sets the round count for a longer stress run. */
-static void
-run_gpu_cap_wake(void)
-{
-    uint32_t rounds = 4000, lost, slept, lo, hi;
-    int      r;
-    char     nm[96];
 
-    if (getenv("R128_CAPWAKE_ROUNDS"))
-        rounds = (uint32_t) strtoul(getenv("R128_CAPWAKE_ROUNDS"), NULL, 0);
-    r = harness_gpu_group_wake(rounds, &lost, &slept, &lo, &hi);
-    if (!r) {
-        printf("SKIP gpu cap wake: no capture threads (built without Vulkan headers)\n");
+/* ------------------------------------------------------------------ */
+/* Unit lfb-marks: the store marks of a word or dword aperture store.  */
+/* After its bytes, every store into local memory sets changedvram of  */
+/* the page it starts in, and for every page it touches the 64 KB      */
+/* piece mark and then the any-mark of the levels the CPU lanes keep,  */
+/* the 4 KB page mark of the levels cached with a GPU backend, and the */
+/* host-newer page mark of the GPU mirror. The submit thread clears    */
+/* those marks as it copies, so a store that lands after a clear has   */
+/* to set them again even where an earlier store had set them already. */
+/* Each leg stores once to mark the page, clears the marks on one      */
+/* thread, then stores into the same bytes on the other thread, both   */
+/* ways round. The thread join orders each clear before the next      */
+/* store, so these rows catch a writer that remembers what it marked   */
+/* (a cache that cannot see the clear), not one that reads the mark    */
+/* and skips it in a race with the clear. The common path is a dword   */
+/* or word inside one page; a dword that crosses a page, here also     */
+/* into the next 64 KB piece, and one inside a SURFACE window that     */
+/* moves it to another 64 KB piece take the full path and must leave   */
+/* the same marks. Every store also checks which path it took, with    */
+/* sync telemetry and the aperture profile off for the legs. The legs  */
+/* run on a fabricated backend with a host-newer map of their own,     */
+/* with the command executor parked so no other thread reads either,   */
+/* so every mark is live in every lane. Two overlay rows check the     */
+/* store note on the common path: a store into the composed source     */
+/* makes the next line compose again, one outside it does not.         */
+/* ------------------------------------------------------------------ */
+#define LM_PAGE 0x00345000u /* card offset of the page the legs store into */
+#define LM_CFC  3u          /* the changedvram value the legs run with  */
+
+typedef struct {
+    rage128_t *dev;
+    uint32_t   ap;    /* aperture address of the store        */
+    uint32_t   off;   /* card offset of the bytes it reaches  */
+    uint32_t   len;   /* 2 or 4                               */
+    uint32_t   val;
+    int        clear; /* the thread clears instead of storing */
+} lm_job_t;
+
+static void
+lm_store(const lm_job_t *j)
+{
+    if (j->len == 2)
+        rage128_lfb_writew(j->ap, (uint16_t) j->val, j->dev);
+    else
+        rage128_lfb_writel(j->ap, j->val, j->dev);
+}
+
+/* Clear the marks of every page [off, off+len) touches with the
+   operations the submit thread takes them with, and their changedvram
+   entries. The callers order it against the stores by a thread join. */
+static void
+lm_clear(rage128_t *dev, uint32_t off, uint32_t len)
+{
+    struct rage128_tex_stage *ts = &dev->tex_stage;
+
+    atomic_store(&ts->keep_any, 0);
+    atomic_store(&ts->keep_all, 0);
+    atomic_store(&ts->cst_all, 0);
+    atomic_store(&dev->vram_hnew_all, 0);
+    for (uint32_t p = off >> 12; p <= (off + len - 1u) >> 12; p++) {
+        (void) atomic_exchange(&ts->keep_pg[p >> (R128_TEX_KEEP_SHIFT - 12)], 0);
+        (void) atomic_exchange(&ts->cst_pg[p], 0);
+        (void) atomic_exchange(&dev->vram_hnew[p], 0);
+        dev->svga.changedvram[p] = 0;
+    }
+}
+
+static void *
+lm_thread(void *arg)
+{
+    const lm_job_t *j = (const lm_job_t *) arg;
+
+    if (j->clear)
+        lm_clear(j->dev, j->off, j->len);
+    else
+        lm_store(j);
+    return NULL;
+}
+
+/* Run the job on a second thread and wait for it. */
+static void
+lm_on_thread(lm_job_t *j)
+{
+    pthread_t th;
+
+    if (pthread_create(&th, NULL, lm_thread, j) != 0) {
+        check_true("lfb marks: second thread starts", 0);
+        lm_thread(j);
         return;
     }
-    printf("gpu cap wake: rounds=%u lost=%u slept=%u rows=%u..%u\n", rounds, lost,
-           slept, lo, hi);
-    check_true("gpu cap wake: the loop finishes", r > 0);
-    check_true("gpu cap wake: rounds reached the sleep", slept > 0);
-    snprintf(nm, sizeof(nm), "gpu cap wake: lost wakeups in %u rounds", rounds);
-    check32(nm, lost, 0);
+    pthread_join(th, NULL);
 }
+
+/* The store just made took the full path (full) or the common one. */
+static void
+lm_path(const char *leg, uint32_t before, int full)
+{
+    char name[200];
+
+    snprintf(name, sizeof(name), "lfb marks: %s: took the %s path", leg, full ? "full" : "common");
+    check32(name, atomic_load(&rage128_harness_full_stores) - before, full ? 1u : 0u);
+}
+
+static void
+lm_check(rage128_t *dev, const char *leg, const lm_job_t *j, int cst)
+{
+    struct rage128_tex_stage *ts = &dev->tex_stage;
+    const uint8_t            *v  = dev->svga.vram;
+    uint32_t                  m  = dev->vram_mask;
+    char                      name[200];
+
+    snprintf(name, sizeof(name), "lfb marks: %s: bytes landed", leg);
+    if (j->len == 2)
+        check32(name, (uint32_t) v[j->off] | ((uint32_t) v[(j->off + 1u) & m] << 8),
+                j->val & 0xffffu);
+    else
+        check32(name, (uint32_t) v[j->off] | ((uint32_t) v[(j->off + 1u) & m] << 8)
+                    | ((uint32_t) v[(j->off + 2u) & m] << 16)
+                    | ((uint32_t) v[(j->off + 3u) & m] << 24),
+                j->val);
+    snprintf(name, sizeof(name), "lfb marks: %s: kept-level any-mark set", leg);
+    check32(name, atomic_load(&ts->keep_any), 1);
+    for (uint32_t p = j->off >> 12; p <= (j->off + j->len - 1u) >> 12; p++) {
+        if (p == j->off >> 12) {
+            snprintf(name, sizeof(name), "lfb marks: %s: page %05x changedvram set", leg, p);
+            check32(name, dev->svga.changedvram[p], LM_CFC);
+        }
+        snprintf(name, sizeof(name), "lfb marks: %s: page %05x kept-level piece mark set", leg, p);
+        check32(name, atomic_load(&ts->keep_pg[p >> (R128_TEX_KEEP_SHIFT - 12)]), 1);
+        snprintf(name, sizeof(name), "lfb marks: %s: page %05x host-newer mark set", leg, p);
+        check32(name, atomic_load(&dev->vram_hnew[p]), 1);
+        if (cst) {
+            snprintf(name, sizeof(name), "lfb marks: %s: page %05x cached-level mark set", leg, p);
+            check32(name, atomic_load(&ts->cst_pg[p]), 1);
+        }
+    }
+}
+
+/* One case: a first store marks the page, then the clear and the second
+   store run on different threads, both ways round. */
+static void
+lm_case(rage128_t *dev, const char *what, uint32_t ap, uint32_t off, uint32_t len, int cst,
+        int full)
+{
+    lm_job_t st = { dev, ap, off, len, 0x5a5a1234u, 0 };
+    lm_job_t cl = st;
+    char     leg[160];
+    uint32_t n;
+
+    cl.clear = 1;
+    lm_clear(dev, off, len);
+    n = atomic_load(&rage128_harness_full_stores);
+    lm_store(&st);
+    snprintf(leg, sizeof(leg), "%s, first store", what);
+    lm_path(leg, n, full);
+    lm_check(dev, leg, &st, cst);
+
+    st.val = 0x11223344u;
+    lm_on_thread(&cl);
+    n = atomic_load(&rage128_harness_full_stores);
+    lm_store(&st);
+    snprintf(leg, sizeof(leg), "%s, cleared on a second thread, stored again on the first", what);
+    lm_path(leg, n, full);
+    lm_check(dev, leg, &st, cst);
+
+    st.val = 0xa1b2c3d4u;
+    lm_clear(dev, off, len);
+    n = atomic_load(&rage128_harness_full_stores);
+    lm_on_thread(&st);
+    snprintf(leg, sizeof(leg), "%s, cleared on the first thread, stored again on a second", what);
+    lm_path(leg, n, full);
+    lm_check(dev, leg, &st, cst);
+}
+
+/* Hold the command executor at the abort park at its loop top, where it
+   reads neither dev->gpu nor the host-newer map, for as long as the legs
+   replace them. */
+static int
+lm_park(rage128_t *dev)
+{
+    atomic_store(&dev->cce_parked, 0);
+    atomic_store(&dev->cce_abort, 1);
+    thread_set_event(dev->cce_wake_event);
+    for (int i = 0; i < 2000 && !atomic_load(&dev->cce_parked); i++)
+        lap_msleep(1);
+    return atomic_load(&dev->cce_parked);
+}
+
+static void
+lm_unpark(rage128_t *dev)
+{
+    atomic_store(&dev->cce_abort, 0);
+    thread_set_event(dev->cce_wake_event);
+}
+
+static void
+run_lfb_marks(void)
+{
+    rage128_t    *dev       = rage128_init(&ati_rage128_pro_device);
+    uint32_t      npages    = (dev->vram_mask >> 12) + 1u;
+    atomic_uchar *map       = calloc(npages, 1);
+    atomic_uchar *saved_map = dev->vram_hnew;
+    void         *fab       = NULL;
+    int           cfc       = dev->svga.monitor->mon_changeframecount;
+    void         *synctel   = dev->synctel;
+    int           ftl_en    = dev->ftl_en;
+    uint32_t      win       = 0, xa = 0, head = 0, n;
+    int           cst;
+
+    if (!map) {
+        check_true("lfb marks: host-newer map allocated", 0);
+        close_dev(dev);
+        return;
+    }
+    flush_sync(dev);
+    if (!lm_park(dev)) {
+        check_true("lfb marks: executor parked", 0);
+        lm_unpark(dev);
+        free(map);
+        close_dev(dev);
+        return;
+    }
+    if (harness_gpu_available()) {
+        fab = harness_gpu_fab_alloc();
+        check_true("lfb marks: fabricated backend allocated", fab != NULL);
+    } else
+        printf("SKIP lfb marks: cached-level marks and overlay rows (built without Vulkan headers)\n");
+    if (fab)
+        fab_in(dev, fab);
+    cst            = fab != NULL;
+    dev->vram_hnew = map;
+    /* sync telemetry (R128_GPU_SYNC_TELEMETRY) and the aperture profile
+       send every store down the full path; the legs run without them */
+    dev->synctel = NULL;
+    dev->ftl_en  = 0;
+    /* a value no clear leaves, so a row cannot pass on a page that was
+       never stored to */
+    dev->svga.monitor->mon_changeframecount = LM_CFC;
+    wr(dev, 0x0b0c, 0); /* SURFACE0_INFO: no window */
+
+    lm_case(dev, "aligned dword", dev->lfb_base + LM_PAGE + 0x120u, LM_PAGE + 0x120u, 4, cst, 0);
+    lm_case(dev, "aligned word", dev->lfb_base + LM_PAGE + 0x342u, LM_PAGE + 0x342u, 2, cst, 0);
+    lm_case(dev, "dword in the last bytes of a page", dev->lfb_base + LM_PAGE + 0xffcu,
+            LM_PAGE + 0xffcu, 4, cst, 0);
+    lm_case(dev, "word in the last bytes of a page", dev->lfb_base + LM_PAGE + 0xffeu,
+            LM_PAGE + 0xffeu, 2, cst, 0);
+    lm_case(dev, "dword crossing into the next page and 64 KB piece",
+            dev->lfb_base + 0x0034fffeu, 0x0034fffeu, 4, cst, 1);
+
+    /* An aligned dword of a 5120-byte SURFACE window whose translated
+       bytes lie in another 64 KB piece, and so another 4 KB page, than
+       its untranslated offset: the full path translates it, and the
+       marks follow the translated bytes. */
+    wr(dev, 0x0b04, 0x00300000); /* SURFACE0_LOWER_BOUND */
+    wr(dev, 0x0b08, 0x00400000); /* SURFACE0_UPPER_BOUND */
+    wr(dev, 0x0b0c, 11);         /* SURFACE0_INFO, PITCHSEL 11 = 5120 B */
+    for (uint32_t o = 0x00300000u; o < 0x00340000u; o += 4u) {
+        uint32_t t = rage128_surf_xlate(dev, o, 4, &head);
+
+        if (head == 4 && t >> 16 != o >> 16) {
+            win = o;
+            xa  = t;
+            break;
+        }
+    }
+    check_true("lfb marks: a SURFACE dword that moves to another 64 KB piece exists", win != 0);
+    if (win)
+        lm_case(dev, "dword in a SURFACE window", dev->lfb_base + win, xa, 4, cst, 1);
+    wr(dev, 0x0b0c, 0);
+
+    if (fab) {
+        /* the overlay store note on the common path */
+        dev->ov0.gpu_frame  = 7;
+        dev->ov0.gpu_src_lo = LM_PAGE;
+        dev->ov0.gpu_src_hi = LM_PAGE + 0x100u;
+        n                   = atomic_load(&rage128_harness_full_stores);
+        rage128_lfb_writel(dev->lfb_base + LM_PAGE + 0x800u, 0x01020304u, dev);
+        lm_path("dword outside the overlay source", n, 0);
+        check32("lfb marks: a dword outside the overlay source leaves its frame",
+                dev->ov0.gpu_frame, 7);
+        n = atomic_load(&rage128_harness_full_stores);
+        rage128_lfb_writel(dev->lfb_base + LM_PAGE + 0xfcu, 0x01020304u, dev);
+        lm_path("dword into the overlay source", n, 0);
+        check32("lfb marks: a dword into the overlay source composes it again",
+                dev->ov0.gpu_frame, 0);
+        dev->ov0.gpu_src_lo = dev->ov0.gpu_src_hi = 0;
+        fab_out(dev);
+        harness_gpu_fab_free(fab);
+    }
+    /* The device's own map comes back with every page marked, so a real
+       mirror copies every page these stores reached. */
+    dev->vram_hnew = saved_map;
+    free(map);
+    dev->svga.monitor->mon_changeframecount = cfc;
+    dev->synctel                            = synctel;
+    dev->ftl_en                             = ftl_en;
+    r128_vram_hnew_all(dev);
+    lm_unpark(dev);
+    close_dev(dev);
+}
+#undef LM_PAGE
+#undef LM_CFC
+
 #undef CS_OLD
 #undef CS_NEW
 #undef CS_LEN
@@ -33298,7 +34206,7 @@ static const char *const shard_units[] = {
     "x64legs", "synctel", "yuv-border", "texture-alpha", "dither-init",
     "sec-persp", "sec-only", "dst-1555-4444", "zoff-tfog",
     "stipple-fast", "lanegap-expectedfail", "gpu-carry", "gpu-r2d", "tex-keep",
-    "tex-batch", "tex-cache-store", "gpu-stage-modes", "gpu-cap-wake"
+    "tex-batch", "tex-cache-store", "gpu-stage-modes", "lfb-marks"
 };
 static char *selected_units;
 
@@ -33979,6 +34887,8 @@ main(int argc, char **argv)
         run_agp_16mb();
     if (unit_selected("pci-xpert128"))
         run_pci_xpert128();
+    if (unit_selected("pci-xpert128"))
+        run_gart_wb_handoff();
     if (unit_selected("agp-oracle"))
         run_cpu_walk_hold();
     if (unit_selected("agp-oracle"))
@@ -34037,8 +34947,8 @@ main(int argc, char **argv)
         run_tex_batch();
     if (unit_selected("tex-cache-store"))
         run_tex_cache_store();
-    if (unit_selected("gpu-cap-wake"))
-        run_gpu_cap_wake();
+    if (unit_selected("lfb-marks"))
+        run_lfb_marks();
     if (getenv("R128_LANEGAP"))
         if (unit_selected("lanegap-expectedfail"))
             run_lanegap_expectedfail();

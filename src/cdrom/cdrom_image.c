@@ -159,6 +159,7 @@ typedef struct cd_image_writable_t {
     uint32_t      bad_sectors_num;
     track_t      *tracks;
     uint32_t     *bad_sectors;
+    mds_dpm_t     dpm;
     dstruct_t     dstruct;
 
     sbi_replacement_ent* sector_subs;
@@ -299,7 +300,8 @@ typedef struct
 typedef struct
 {
     uint32_t type;
-    uint32_t pad[2];
+    uint32_t start;
+    uint32_t resolution;
     uint32_t entries;
 } mds_dpm_block_t;
 #pragma pack(pop)
@@ -1751,7 +1753,7 @@ image_load_nrg_fp(cd_image_t *img, FILE* file, const char* nrgfile)
             // Parse SINF chunks first to identify the sessions.
             // Also parse CUEX chunks to identify useful information.
             chunk_pos = ftello64(file);
-            *(uint32_t*)idbuffer = read_uint32_nrg(file); 
+            *(uint32_t*)idbuffer = read_uint32_nrg(file);
             uint32_t chunk_size = read_uint32_nrg(file);
             if (memcmp(idbuffer, "XOAD", 4) == 0) {
                 uint64_t lead_out_length = 0;
@@ -3305,6 +3307,87 @@ blindwrite_load_sessions(cd_image_t *img, blindwrite_cursor_t *cursor, uint16_t 
     return previous_track != 0;
 }
 
+/*
+   DPM data: u32 start sector, resolution and count, then count angles in
+   1/256 turn, as Alcohol 120% stores them. It is at byte 32 of the
+   descriptor's DPM block and at byte 12 of a .bwa file.
+ */
+static int
+blindwrite_parse_dpm(mds_dpm_t *dpm, const uint8_t *data, size_t size, size_t at)
+{
+    if (at > size || (size - at) / 4 < 3)
+        return 0;
+
+    data += at;
+    size -= at;
+    const uint32_t start = blindwrite_u32(data);
+    const uint32_t resolution = blindwrite_u32(data + 4);
+    const uint32_t count = blindwrite_u32(data + 8);
+    if (!resolution || !count || count > (size - 12) / 4)
+        return 0;
+
+    uint32_t *angles = malloc((size_t) count * sizeof(uint32_t));
+    if (angles == NULL)
+        return 0;
+    for (uint32_t i = 0; i < count; i++) {
+        angles[i] = blindwrite_u32(data + 12 + 4 * (size_t) i);
+        /* Angles that go back are not a measurement. */
+        if (i && angles[i] < angles[i - 1]) {
+            free(angles);
+            return 0;
+        }
+    }
+
+    free(dpm->data);
+    dpm->start = start;
+    dpm->resolution = resolution;
+    dpm->count = count;
+    dpm->data = angles;
+    return 1;
+}
+
+static int
+blindwrite_load_bwa(cd_image_t *img, const char *descriptor)
+{
+    char path[1024];
+    const char *name = descriptor;
+    for (const char *p = descriptor; *p; p++)
+        if (*p == '/' || *p == '\\')
+            name = p + 1;
+
+    const char *dot = strrchr(name, '.');
+    const size_t stem = dot ? (size_t) (dot - name) : strlen(name);
+    const size_t prefix = name - descriptor;
+    if (prefix + stem + 5 > sizeof(path))
+        return 0;
+
+    char bwa[sizeof(path)];
+    memcpy(bwa, name, stem);
+    strcpy(bwa + stem, ".bwa");
+    memcpy(path, descriptor, prefix);
+    path[prefix] = '\0';
+    if (!blindwrite_append_component(path, sizeof(path), bwa, 0))
+        return 0;
+
+    FILE *fp = plat_fopen(path, "rb");
+    if (fp == NULL)
+        return 0;
+
+    int result = 0;
+    if (!fseeko64(fp, 0, SEEK_END)) {
+        const off64_t size = ftello64(fp);
+        /* 16 MB is far more angles than any disc has sectors. */
+        if (size >= 24 && size <= (16 << 20) && !fseeko64(fp, 0, SEEK_SET)) {
+            uint8_t *data = malloc(size);
+            if (data != NULL && fread(data, 1, size, fp) == (size_t) size)
+                result = blindwrite_parse_dpm(&img->dpm, data, size, 12);
+            free(data);
+        }
+    }
+    fclose(fp);
+    return result;
+}
+
 static int
 blindwrite_parse(cd_image_t *img, const uint8_t *data, size_t size, const char *path)
 {
@@ -3322,10 +3405,13 @@ blindwrite_parse(cd_image_t *img, const uint8_t *data, size_t size, const char *
                               blindwrite_u16(header + 100) + blindwrite_u32(header + 104) +
                               blindwrite_u32(header + 120) +
                               (cd ? blindwrite_u16(header + 102) : blindwrite_u32(header + 124));
+    const uint32_t dpm_length = blindwrite_u32(header + 256);
+    const uint8_t *dpm = NULL;
     if (!blindwrite_take(&cursor, metadata) ||
         !blindwrite_load_blocks(img, &cursor, path) ||
         !blindwrite_load_sessions(img, &cursor, blindwrite_u16(header + 50)) ||
-        !blindwrite_take(&cursor, (uint64_t) blindwrite_u32(header + 256) + 4))
+        (dpm = blindwrite_take(&cursor, dpm_length)) == NULL ||
+        !blindwrite_take(&cursor, 4))
         return 0;
 
     const uint8_t *footer = blindwrite_take(&cursor, 16);
@@ -3339,6 +3425,11 @@ blindwrite_parse(cd_image_t *img, const uint8_t *data, size_t size, const char *
         if (i == 13)
             memcpy(img->mcn, header + 65, 13);
     }
+
+    /* The .bwa file beside the descriptor has the whole table; the descriptor
+       usually keeps only its start. */
+    if (!blindwrite_load_bwa(img, path))
+        blindwrite_parse_dpm(&img->dpm, dpm, dpm_length, 32);
     return 1;
 }
 
@@ -3622,6 +3713,102 @@ mds_decrypt_track_data(cd_image_t *img, const char *mdsfile, FILE **fp)
     return isDVD + 1;
 }
 
+/*
+   DPM blocks are a u32 count and a u32 offset per block; each block is an
+   mds_dpm_block_t header and entries u32 values. Type 1 is the angle table,
+   type 2 the bad sector list; the first block of each type is used.
+ */
+int
+mds_load_dpm_blocks(FILE *fp, const uint32_t offs, mds_dpm_t *dpm,
+                    uint32_t **bad_sectors, uint32_t *bad_sectors_num)
+{
+    mds_dpm_block_t block      = { 0 };
+    uint32_t        blocks_num = 0x00000000;
+    uint32_t        block_offs = 0x00000000;
+    size_t          read_size;
+
+    fseek(fp, offs, SEEK_SET);
+    if (fread(&blocks_num, 1, sizeof(uint32_t), fp) != sizeof(uint32_t))
+        return 0;
+
+    for (uint32_t b = 0; b < blocks_num; b++) {
+        /* A damaged block after the bad sector list does not fail the image. */
+        fseek(fp, offs + 4 + (b * 4), SEEK_SET);
+        if (fread(&block_offs, 1, sizeof(uint32_t), fp) != sizeof(uint32_t))
+            return (*bad_sectors != NULL);
+
+        fseek(fp, block_offs, SEEK_SET);
+        if (fread(&block, 1, sizeof(mds_dpm_block_t), fp) != sizeof(mds_dpm_block_t))
+            return (*bad_sectors != NULL);
+
+        read_size = (size_t) block.entries * sizeof(uint32_t);
+
+        if ((block.type == 0x00000001) && (dpm->data == NULL) && (block.resolution != 0) && (block.entries != 0)) {
+            dpm->data = (uint32_t *) malloc(read_size);
+            /* The table only affects timing, the image stays usable without it. */
+            if ((dpm->data == NULL) || (fread(dpm->data, 1, read_size, fp) != read_size))
+                mds_dpm_free(dpm);
+            else {
+                dpm->start      = block.start;
+                dpm->resolution = block.resolution;
+                dpm->count      = block.entries;
+            }
+        } else if ((block.type == 0x00000002) && (*bad_sectors == NULL)) {
+            *bad_sectors_num = block.entries;
+            *bad_sectors     = (uint32_t *) calloc(*bad_sectors_num, sizeof(uint32_t));
+            if ((read_size != 0) &&
+                ((*bad_sectors == NULL) || (fread(*bad_sectors, 1, read_size, fp) != read_size)))
+                return 0;
+        }
+    }
+
+    return 1;
+}
+
+/* Angle in turns from the table start and density in turns per sector. */
+int
+mds_dpm_get(const mds_dpm_t *dpm, const uint32_t sector, double *angle, double *density)
+{
+    const int64_t rel = (int64_t) sector - (int64_t) dpm->start;
+    uint32_t      lo;
+    uint32_t      diff;
+    int64_t       i;
+
+    if ((dpm->data == NULL) || (rel < 0) ||
+        (rel >= (((int64_t) dpm->count + 1) * dpm->resolution)))
+        return 0;
+
+    i = rel / dpm->resolution;
+
+    if (i >= dpm->count) {
+        /* Past the last value, the last interval continues. */
+        i    = dpm->count;
+        lo   = dpm->data[dpm->count - 1];
+        diff = (dpm->count > 1) ? (lo - dpm->data[dpm->count - 2]) : lo;
+    } else {
+        lo   = (i == 0) ? 0 : dpm->data[i - 1];
+        diff = dpm->data[i] - lo;
+    }
+
+    const double d = ((double) diff) / 256.0 / (double) dpm->resolution;
+
+    if (density != NULL)
+        *density = d;
+    if (angle != NULL)
+        *angle = (((double) lo) / 256.0) + (((double) (rel - (i * dpm->resolution))) * d);
+
+    return 1;
+}
+
+void
+mds_dpm_free(mds_dpm_t *dpm)
+{
+    if (dpm->data != NULL)
+        free(dpm->data);
+
+    memset(dpm, 0x00, sizeof(mds_dpm_t));
+}
+
 static int
 image_load_mds(cd_image_t *img, const char *mdsfile)
 {
@@ -3642,9 +3829,6 @@ image_load_mds(cd_image_t *img, const char *mdsfile)
     mds_trk_ex_block_t    mds_trk_ex_block    = { 0 };
     mds_footer_t          mds_footer          = { 0 };
     mds_v2_footer_t       mds_v2_footer       = { 0 };
-    mds_dpm_block_t       mds_dpm_block       = { 0 };
-    uint32_t              mds_dpm_blocks_num  = 0x00000000;
-    uint32_t              mds_dpm_block_offs  = 0x00000000;
 
     img->tracks     = NULL;
     img->tracks_num = 0;
@@ -3782,48 +3966,13 @@ image_load_mds(cd_image_t *img, const char *mdsfile)
         }
     }
 
-    if (mds_hdr.dpm_blocks_offs != 0x00) {
-        fseek(fp, mds_hdr.dpm_blocks_offs, SEEK_SET);
-        if (LOG_VAR(dbnret) fread(&mds_dpm_blocks_num, 1, sizeof(uint32_t), fp) != sizeof(uint32_t)) {
-            image_log(img->log, "dbnret = %i (expected: %i)\n", (int) dbnret, (int) sizeof(uint32_t));
-            if (fp != NULL)
-                fclose(fp);
-            return 0;
-        }
-
-        if (mds_dpm_blocks_num > 0)  for (int b = 0; b < mds_dpm_blocks_num; b++) {
-            fseek(fp, mds_hdr.dpm_blocks_offs + 4 + (b * 4), SEEK_SET);
-            if (LOG_VAR(dboret) fread(&mds_dpm_block_offs, 1, sizeof(uint32_t), fp) != sizeof(uint32_t)) {
-                image_log(img->log, "dboret = %i (expected: %i)\n", (int) dboret, (int) sizeof(uint32_t));
-                if (fp != NULL)
-                    fclose(fp);
-                return 0;
-            }
-
-            fseek(fp, mds_dpm_block_offs, SEEK_SET);
-            if (LOG_VAR(dbret) fread(&mds_dpm_block, 1, sizeof(mds_dpm_block_t), fp) != sizeof(mds_dpm_block_t)) {
-                image_log(img->log, "dbret = %i (expected: %i)\n", (int) dbret, (int) sizeof(mds_dpm_block_t));
-                if (fp != NULL)
-                    fclose(fp);
-                return 0;
-            }
-
-            /* We currently only support the bad sectors block and not (yet) actual DPM. */
-            if (mds_dpm_block.type == 0x00000002) {
-                /* Bad sectors. */
-                img->bad_sectors_num = mds_dpm_block.entries;
-                img->bad_sectors     = (uint32_t *) calloc(img->bad_sectors_num, sizeof(uint32_t));
-                fseek(fp, mds_dpm_block_offs + sizeof(mds_dpm_block_t), SEEK_SET);
-                int read_size = img->bad_sectors_num * sizeof(uint32_t);
-                if (LOG_VAR(dbtret) fread(img->bad_sectors, 1, read_size, fp) != read_size) {
-                    image_log(img->log, "dbtret = %i (expected: %i)\n", (int) dbtret, (int) read_size);
-                    if (fp != NULL)
-                        fclose(fp);
-                    return 0;
-                }
-                break;
-            }
-        }
+    if ((mds_hdr.dpm_blocks_offs != 0x00) &&
+        !mds_load_dpm_blocks(fp, mds_hdr.dpm_blocks_offs, &img->dpm,
+                             &img->bad_sectors, &img->bad_sectors_num)) {
+        image_log(img->log, "Unable to read the DPM blocks\n");
+        if (fp != NULL)
+            fclose(fp);
+        return 0;
     }
 
     for (int s = 0; s < mds_hdr.sess_num; s++) {
@@ -4504,6 +4653,17 @@ image_has_audio(const void *local)
     return img->has_audio;
 }
 
+static int
+image_get_dpm(const void *local, const uint32_t sector, double *angle, double *density)
+{
+    const cd_image_t *img = (const cd_image_t *) local;
+
+    if (img->dpm.data == NULL)
+        return -1;
+
+    return mds_dpm_get(&img->dpm, sector, angle, density);
+}
+
 static void
 image_close(void *local)
 {
@@ -4530,6 +4690,8 @@ image_close(void *local)
 
         if (img->bad_sectors != NULL)
             free(img->bad_sectors);
+
+        mds_dpm_free(&img->dpm);
 
         free(img);
 
@@ -4571,7 +4733,15 @@ static const cdrom_ops_t image_ops = {
     NULL,
     image_close,
     NULL,
-    image_get_mcn
+    image_get_mcn,
+    NULL,
+    NULL,
+    NULL,
+    NULL,
+    NULL,
+    NULL,
+    NULL,
+    image_get_dpm
 };
 
 /* Public functions. */

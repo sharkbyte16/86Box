@@ -38,6 +38,7 @@ extern "C" {
 
 #include "qt_settingspcmcia.hpp"
 #include "qt_deviceconfig.hpp"
+#include "qt_util.hpp"
 #include "qt_defs.hpp"
 
 static bool
@@ -58,10 +59,6 @@ SettingsPcmcia::SettingsPcmcia(QWidget *parent)
                           "DOS card and socket services, Windows 95/98 and Linux (i82365) find it."));
     layout->addWidget(enable);
 
-    hint = new QLabel;
-    hint->setWordWrap(true);
-    layout->addWidget(hint);
-
     /* One label width for both sockets, so their boxes line up whichever
        rows each shows. */
     const QStringList labels = { tr("Card:"), tr("Network:"), tr("Interface:") };
@@ -79,6 +76,7 @@ SettingsPcmcia::SettingsPcmcia(QWidget *parent)
 
         k.group     = new QGroupBox(tr("Socket %1").arg(QChar('A' + s)));
         auto *form  = new QFormLayout(k.group);
+        util::setupFormLayout(form);
         auto *row   = new QHBoxLayout;
         k.card      = new QComboBox;
         k.configure = new QPushButton(tr("Configure"));
@@ -138,24 +136,12 @@ SettingsPcmcia::onCurrentMachineChanged(int machineId)
     updateState();
 }
 
-/* Greyed out: say why, and what to do about it. */
 void
 SettingsPcmcia::updateState()
 {
     const bool isa = hasIsaBus(machineId);
-    QString    why;
-    QString    fix;
 
     enable->setEnabled(isa);
-    if (!isa) {
-        why = tr("The PC Card controller is an ISA card, and this machine has no ISA slot.");
-        fix = tr("Choose a machine with ISA slots on the Machine page to fit one.");
-    } else if (!enable->isChecked()) {
-        why = tr("The sockets are unavailable while the controller is not fitted.");
-        fix = tr("Tick the box above to fit it.");
-    }
-    hint->setVisible(!why.isEmpty());
-    hint->setText(QString("<small>&#9432; %1 %2</small>").arg(why.toHtmlEscaped(), fix.toHtmlEscaped()));
 
     for (int s = 0; s < PCMCIA_SOCKETS; s++) {
         sock[s].group->setEnabled(isa && enable->isChecked());
@@ -172,9 +158,6 @@ SettingsPcmcia::updateSocket(int s)
     const bool cap = net && (k.netType->currentData().toInt() == NET_TYPE_PCAP);
 
     k.configure->setEnabled(pcmcia_card_has_config(c));
-    k.configure->setToolTip((c == 0) ? tr("Configure is unavailable because the socket is empty.\nSelect a card first.")
-                                     : (pcmcia_card_has_config(c) ? tr("Configure the %1.").arg(k.card->currentText())
-                                                                  : tr("This card has no settings to configure.")));
     k.netLabel->setVisible(net);
     k.netType->setVisible(net);
     k.hostLabel->setVisible(cap);
